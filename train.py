@@ -5,7 +5,7 @@ import torch
 from torch import optim
 from torch.optim import lr_scheduler 
 from torch.nn.utils import clip_grad
-
+from eval import eval #import evaluation functions
 basic_configs = {
     # Data
     'data_dir': './data',
