@@ -3,33 +3,36 @@ import time
 from tqdm import tqdm
 import numpy as np
 import torch
-from torch import optim
+from torch import ge, optim
 from torch import nn
 from torch.optim import lr_scheduler 
 from torch.nn.utils import clip_grad
+from torch.utils.data import random_split
 # from eval import eval #import evaluation functions
 from model.srgan import Generator, Discriminator, TruncatedVGG19
 from model.srresnet import SRResNet
 from dataset import SRDataset
+from utils import image_converter
 
 MODEL_LIST = ['srgan', 'srresnet', 'vit']
 
 basic_configs = {
     # Data
-    'data_dir': 'train2014',
+    'data_dir': 'val2014',
     'crop_size': 96,
     'scaling_factor': 4,
     'num_workers': 4,
-    'model_name': 'srresnet',
+    'val_proportion': 0.05,
 
     # Training
+    'model_name': 'srresnet',
     'device': 'cuda', # cpu or cuda
     'batch_size': 16, 
     'checkpoint': None,
     'epochs':100, # number of training iterations
-    'start_epoch': 0,
+    # 'start_epoch': 0,
     'eval_per_epochs': 5,
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-5,
     'lr_scheduler': None,
     'lr_scheduler_parameters': {
         'step_size': 30,
@@ -138,16 +141,26 @@ def run(basic_configs, model_configs):
         raise NotImplementedError
 
         # Custom dataloaders
-    train_dataset = SRDataset(basic_configs['data_dir'],
+    full_train_dataset = SRDataset(basic_configs['data_dir'],
                             type='train',
                             crop_size=basic_configs['crop_size'],
                             scaling_factor=basic_configs['scaling_factor'],
                             lr_img_type='imagenet-norm',
                             hr_img_type='imagenet-norm')
+    val_size = int(basic_configs['val_proportion'] * len(full_train_dataset))
+    train_size = len(full_train_dataset) - val_size
+    # Train/Valid split
+    train_dataset, val_dataset = \
+        random_split(full_train_dataset, [train_size, val_size])
+
     train_loader = torch.utils.data.DataLoader(train_dataset, 
                             batch_size=basic_configs['batch_size'], 
                             shuffle=True, num_workers=basic_configs['num_workers'],
                                             pin_memory=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, 
+                            batch_size=basic_configs['batch_size'], 
+                            shuffle=True, num_workers=basic_configs['num_workers'],
+                                            pin_memory=True)                                        
 
     # Create learning rate scheduler
     # FIXME: Not finished
@@ -160,8 +173,11 @@ def run(basic_configs, model_configs):
     else:
         learning_rate_scheduler = None
 
+    # Start Training
     if basic_configs['model_name'] in ['srresnet']:
-        train_single_model(train_data_loader=train_loader,
+        train_single_model(model_name=basic_configs['model_name'],
+                            train_data_loader=train_loader,
+                            valid_data_loader=val_loader,
                             model=model, 
                             optimizer=optimizer,
                             criterion=criterion,
@@ -172,30 +188,35 @@ def run(basic_configs, model_configs):
                             lr_scheduler=learning_rate_scheduler,
                             save=basic_configs['save'])
     elif basic_configs['model_name'] in ['srgan']:
-        train_generative_adversarial_model(train_data_loader=train_loader,
+        train_generative_adversarial_model(model_name=basic_configs['model_name'],
+                                            train_data_loader=train_loader,
+                                            valid_data_loader=val_loader,
                                             generator=generator,
                                             discriminator=discriminator,
                                             loss_computer=truncated_vgg19,
                                             content_loss_criterion=content_loss_criterion,
                                             adversarial_loss_criterion=adversarial_loss_criterion,
-                                            optimizer_g=optimizer_g,
-                                            optimizer_d=optimizer_d,
+                                            optimizer_generator=optimizer_g,
+                                            optimizer_discriminator=optimizer_d,
                                             epochs=basic_configs['epochs'],
+                                            beta=model_configs['beta'],
+                                            eval_per_epochs=basic_configs['eval_per_epochs'],
                                             device=device,
                                             grad_clip=basic_configs['grad_clip'],
-                                            lr_scheduler=learning_rate_scheduler)
+                                            lr_scheduler=learning_rate_scheduler,
+                                            save=basic_configs['save'])
 
 
 
-def train_single_model(train_data_loader, 
+def train_single_model(model_name,
+                        train_data_loader, valid_data_loader,
                         model, optimizer, criterion, 
                         epochs, eval_per_epochs, device, 
                         grad_clip=None, lr_scheduler=None, save=False):
 
-    model.train()
     
     for epoch in range(epochs):
-
+        model.train()
         start_time = time.time()
         loss_history = []
         with tqdm(train_data_loader, unit='batch') as tepoch:
@@ -227,30 +248,169 @@ def train_single_model(train_data_loader,
                 optimizer.step()
 
         end_time = time.time()
-
         loss_val = np.mean(loss_history)
+        
         print('Epoch: {0}----Loss {loss:.4f}'
             '----Time: {time} secs'.format(epoch, 
             loss=loss_val, time=end_time-start_time))
         
         # Do evaluation
         if (epoch + 1) % eval_per_epochs == 0:
-            pass
+            start_time = time.time()
+            model.eval()
+            loss_history = []
+            with torch.no_grad():
+                with tqdm(valid_data_loader, unit='batch') as vepoch:
+                    for batch in vepoch:
+                        vepoch.set_description(f"Valid at epoch {epoch}")
+
+                        # Prepare Data
+                        lr_imgs, hr_imgs = batch
+                        lr_imgs = lr_imgs.to(device)
+                        hr_imgs = hr_imgs.to(device) 
+
+                        # Forward the model
+                        sr_imgs_pred = model(lr_imgs)
+
+                        loss = criterion(sr_imgs_pred, hr_imgs)
+                        loss_history.append(loss.item())
+                        vepoch.set_postfix(loss=loss.item())
+            end_time = time.time()
+            print('Valid at epoch: {0}----Loss {loss:.4f}'
+                '----Time: {time} secs'.format(epoch, 
+                loss=loss_val, time=end_time-start_time))
 
         if save:
             torch.save({'epoch': epoch,
                     'model': model,
                     'optimizer': optimizer},
-                   'checkpoint_srresnet.pth.tar')
+                    f'{model_name}_checkpoint_{epoch}.pth.tar')
 
 
-def train_generative_adversarial_model(train_data_loader, generator, discriminator, 
-        loss_computer, content_loss_criterion, adversarial_loss_criterion,
-        optimizer_g, optimizer_d, 
-        epochs, device, 
-        grad_clip=True, lr_scheduler=None):
+def train_generative_adversarial_model(model_name,
+        train_data_loader, valid_data_loader, 
+        generator, discriminator, loss_computer, 
+        content_loss_criterion, adversarial_loss_criterion,
+        optimizer_generator, optimizer_discriminator, beta,
+        epochs, eval_per_epochs, device, 
+        grad_clip=None, lr_scheduler=None, save=False):
+    
+    for epoch in range(epochs):
+        generator.train()
+        discriminator.train()
+        start_time = time.time()
+        loss_history = []
+        with tqdm(train_data_loader, unit='batch') as tepoch:
+            for batch in tepoch:
+                tepoch.set_description(f"Epoch {epoch}")
+                
+                '''
+                Generator Part
+                '''
+                optimizer_generator.zero_grad()
 
-    pass
+                # Prepare Data
+                lr_imgs, hr_imgs = batch
+                lr_imgs = lr_imgs.to(device)
+                hr_imgs = hr_imgs.to(device) 
+
+                # Forward the generator
+                sr_imgs_pred = generator(lr_imgs)
+                sr_imgs = image_converter(sr_imgs, source='[-1, 1]', target='imagenet-norm')
+
+                # Calculate VGG feature maps for the super-resolved (SR) and high resolution (HR) images
+                sr_imgs_in_vgg_space = loss_computer(sr_imgs)
+                hr_imgs_in_vgg_space = loss_computer(hr_imgs).detach()
+
+                # Discriminate super-resolved (SR) images
+                sr_discriminated = discriminator(sr_imgs)  # (N)
+
+                # Calculate the Perceptual loss
+                content_loss = content_loss_criterion(sr_imgs_in_vgg_space, hr_imgs_in_vgg_space)
+                adversarial_loss = adversarial_loss_criterion(sr_discriminated, torch.ones_like(sr_discriminated))
+                perceptual_loss = content_loss + beta * adversarial_loss                
+                
+                perceptual_loss.backward()
+
+                loss_history.append(perceptual_loss.item())
+                tepoch.set_postfix(perceptual_loss=perceptual_loss.item())
+
+                if grad_clip:
+                    torch.nn.utils.clip_grad_norm_(generator.parameters(), 
+                        max_norm=grad_clip, norm_type=2.0, error_if_nonfinite=False)
+                
+                if lr_scheduler:
+                    lr_scheduler.step()
+                
+                optimizer_generator.step()
+
+                '''
+                Discriminator Part
+                '''
+                optimizer_discriminator.zero_grad()
+
+                # Discriminate super-resolution (SR) and high-resolution (HR) images
+                hr_discriminated = discriminator(hr_imgs)
+                sr_discriminated = discriminator(sr_imgs.detach())
+                # But didn't we already discriminate the SR images earlier, before updating the generator (G)? Why not just use that here?
+                # Because, if we used that, we'd be back-propagating (finding gradients) over the G too when backward() is called
+                # It's actually faster to detach the SR images from the G and forward-prop again, than to back-prop. over the G unnecessarily
+                # See FAQ section in the tutorial
+
+                # Binary Cross-Entropy loss
+                adversarial_loss = adversarial_loss_criterion(sr_discriminated, torch.zeros_like(sr_discriminated)) + \
+                                adversarial_loss_criterion(hr_discriminated, torch.ones_like(hr_discriminated))
+
+
+                adversarial_loss.backward()
+
+                if grad_clip:
+                    torch.nn.utils.clip_grad_norm_(discriminator.parameters(), 
+                        max_norm=grad_clip, norm_type=2.0, error_if_nonfinite=False)
+
+                # Update discriminator
+                optimizer_discriminator.step()
+
+        end_time = time.time()
+        loss_val = np.mean(loss_history)
+        
+        print('Epoch: {0}----Loss {loss:.4f}'
+            '----Time: {time} secs'.format(epoch, 
+            loss=loss_val, time=end_time-start_time))
+        
+        # Do evaluation
+        if (epoch + 1) % eval_per_epochs == 0:
+            start_time = time.time()
+            generator.eval()
+            loss_history = []
+            with torch.no_grad():
+                with tqdm(valid_data_loader, unit='batch') as vepoch:
+                    for batch in vepoch:
+                        vepoch.set_description(f"Valid at epoch {epoch}")
+
+                        # Prepare Data
+                        lr_imgs, hr_imgs = batch
+                        lr_imgs = lr_imgs.to(device)
+                        hr_imgs = hr_imgs.to(device) 
+
+                        # Forward the model
+                        sr_imgs_pred = generator(lr_imgs)
+
+                        loss = content_loss(sr_imgs_pred, hr_imgs)
+                        loss_history.append(loss.item())
+                        vepoch.set_postfix(loss=loss.item())
+            end_time = time.time()
+            print('Valid at epoch: {0}----Loss {loss:.4f}'
+                '----Time: {time} secs'.format(epoch, 
+                loss=loss_val, time=end_time-start_time))
+
+        if save:
+            torch.save({'epoch': epoch,
+                    'generator': generator,
+                    'discriminator': discriminator,
+                    'optimizer_generator': optimizer_generator,
+                    'optimizer_discriminator': optimizer_discriminator},
+                    f'{model_name}_checkpoint_{epoch}.pth.tar')
 
 if __name__ == '__main__':
     # Set proper network setting
