@@ -1,6 +1,7 @@
 import skimage.metrics
 import numpy as np
 import lpips
+import torch
 
 def eval(model, lr_img, gt_img, basic_configs):
     """

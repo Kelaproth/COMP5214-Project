@@ -50,12 +50,12 @@ class SRDataset(BaseDataset):
 
         # If this is a training dataset, then crop dimensions must be perfectly divisible by the scaling factor
         # (If this is a test dataset, images are not cropped to a fixed size, so this variable isn't used)
-        if self.split == 'train':
+        if self.type == 'train':
             assert self.crop_size % self.scaling_factor == 0, \
             "Crop dimensions are not perfectly divisible by scaling factor! "
             "This will lead to a mismatch in the dimensions of the original HR patches and their super-resolved (SR) versions!"
 
-        self.transform = ImageSampler(split=self.split,
+        self.transform = ImageSampler(split=self.type,
                                         crop_size=self.crop_size,
                                         scaling_factor=self.scaling_factor,
                                         lr_img_type=self.lr_img_type,

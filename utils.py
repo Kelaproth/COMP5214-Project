@@ -15,7 +15,7 @@ imagenet_mean_cuda = torch.FloatTensor([0.485, 0.456, 0.406]).to(device).unsquee
 imagenet_std_cuda = torch.FloatTensor([0.229, 0.224, 0.225]).to(device).unsqueeze(0).unsqueeze(2).unsqueeze(3)
 
 
-def generate_image_lists(data_dir: str = './data', min_size: int = 1):
+def generate_image_lists(data_dir: str = './data', min_size: int = 100):
     """This function will generate image list based on data_folder,
     which is expect to have two folders, train and test folder
 
