@@ -31,7 +31,7 @@ basic_configs = {
     'checkpoint': None,
     'epochs':100, # number of training iterations
     # 'start_epoch': 0,
-    'eval_per_epochs': 5,
+    'eval_per_epochs': 1,
     'learning_rate': 1e-5,
     'lr_scheduler': None,
     'lr_scheduler_parameters': {
@@ -248,11 +248,11 @@ def train_single_model(model_name,
                 optimizer.step()
 
         end_time = time.time()
-        loss_val = np.mean(loss_history)
+        loss_train = np.mean(loss_history)
         
         print('Epoch: {0}----Loss {loss:.4f}'
             '----Time: {time} secs'.format(epoch, 
-            loss=loss_val, time=end_time-start_time))
+            loss=loss_train, time=end_time-start_time))
         
         # Do evaluation
         if (epoch + 1) % eval_per_epochs == 0:
@@ -276,15 +276,18 @@ def train_single_model(model_name,
                         loss_history.append(loss.item())
                         vepoch.set_postfix(loss=loss.item())
             end_time = time.time()
+            loss_val = np.mean(loss_history)
             print('Valid at epoch: {0}----Loss {loss:.4f}'
                 '----Time: {time} secs'.format(epoch, 
                 loss=loss_val, time=end_time-start_time))
 
+        if not os.path.exists('./save'):
+            os.makedirs('./save')
         if save:
             torch.save({'epoch': epoch,
                     'model': model,
                     'optimizer': optimizer},
-                    f'{model_name}_checkpoint_{epoch}.pth.tar')
+                    f'./save/{model_name}_checkpoint_{epoch}.pth.tar')
 
 
 def train_generative_adversarial_model(model_name,
@@ -372,11 +375,11 @@ def train_generative_adversarial_model(model_name,
                 optimizer_discriminator.step()
 
         end_time = time.time()
-        loss_val = np.mean(loss_history)
+        loss_train = np.mean(loss_history)
         
         print('Epoch: {0}----Loss {loss:.4f}'
             '----Time: {time} secs'.format(epoch, 
-            loss=loss_val, time=end_time-start_time))
+            loss=loss_train, time=end_time-start_time))
         
         # Do evaluation
         if (epoch + 1) % eval_per_epochs == 0:
@@ -400,17 +403,20 @@ def train_generative_adversarial_model(model_name,
                         loss_history.append(loss.item())
                         vepoch.set_postfix(loss=loss.item())
             end_time = time.time()
+            loss_val = np.mean(loss_history)
             print('Valid at epoch: {0}----Loss {loss:.4f}'
                 '----Time: {time} secs'.format(epoch, 
                 loss=loss_val, time=end_time-start_time))
-
+        
+        if not os.path.exists('./save'):
+            os.makedirs('./save')
         if save:
             torch.save({'epoch': epoch,
                     'generator': generator,
                     'discriminator': discriminator,
                     'optimizer_generator': optimizer_generator,
                     'optimizer_discriminator': optimizer_discriminator},
-                    f'{model_name}_checkpoint_{epoch}.pth.tar')
+                    f'./save/{model_name}_checkpoint_{epoch}.pth.tar')
 
 if __name__ == '__main__':
     # Set proper network setting
