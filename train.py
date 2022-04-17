@@ -305,10 +305,9 @@ def train_single_model(model_name,
                             nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
                         
             end_time = time.time()
-            loss_val = np.mean(loss_history)
             print('Valid at epoch: {0}----Loss {loss:.4f}'
                 '----Time: {time} secs'.format(epoch, 
-                loss=loss_val, time=end_time-start_time))
+                loss=np.mean(loss_history), time=end_time-start_time))
             print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
                 % (np.mean(psnr), np.mean(ssim), 
                     np.mean(mse), np.mean(nmi), np.mean(dist_)))
@@ -419,6 +418,9 @@ def train_generative_adversarial_model(model_name,
             start_time = time.time()
             generator.eval()
             loss_history = []
+            psnr, ssim, mse, nmi, dist_= [], [], [], [], []
+            loss_fn_alex = lpips.LPIPS(net='alex') # Need [-1, 1]
+            loss_fn_alex.to(device)
             with torch.no_grad():
                 with tqdm(valid_data_loader, unit='batch') as vepoch:
                     for batch in vepoch:
@@ -430,16 +432,34 @@ def train_generative_adversarial_model(model_name,
                         hr_imgs = hr_imgs.to(device) 
 
                         # Forward the model
-                        sr_imgs_pred = generator(lr_imgs)
+                        sr_imgs_pred = generator(lr_imgs) # out is [-1, 1]
 
                         loss = content_loss(sr_imgs_pred, hr_imgs)
                         loss_history.append(loss.item())
                         vepoch.set_postfix(loss=loss.item())
+
+                        dist = loss_fn_alex.forward(sr_imgs_pred, hr_imgs)
+                        dist_.append(dist.mean().item())
+                        
+                        # yimgs = image_converter(sr_imgs_pred.cpu().detach().numpy(), 
+                        #     source='[-1, 1]', target='[0, 255]')
+                        # gtimgs = image_converter(hr_imgs.cpu().detach().numpy(), 
+                        #     source='[-1, 1]', target='[0, 255]')
+                        yimgs = sr_imgs_pred.cpu().detach().numpy() # Simple [-1, 1]
+                        gtimgs = hr_imgs.cpu().detach().numpy()
+                        for yimg, gtimg in zip(yimgs, gtimgs):
+                            psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg))
+                            ssim.append(skimage.metrics.structural_similarity(yimg, gtimg, channel_axis=0))
+                            mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
+                            nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
+                        
             end_time = time.time()
-            loss_val = np.mean(loss_history)
             print('Valid at epoch: {0}----Loss {loss:.4f}'
                 '----Time: {time} secs'.format(epoch, 
-                loss=loss_val, time=end_time-start_time))
+                loss=np.mean(loss_history), time=end_time-start_time))
+            print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
+                % (np.mean(psnr), np.mean(ssim), 
+                    np.mean(mse), np.mean(nmi), np.mean(dist_)))
         
         if not os.path.exists('./save'):
             os.makedirs('./save')
