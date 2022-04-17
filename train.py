@@ -13,8 +13,10 @@ from model.srgan import Generator, Discriminator, TruncatedVGG19
 from model.srresnet import SRResNet
 from dataset import SRDataset
 from utils import image_converter
+import skimage
+import lpips
 
-MODEL_LIST = ['srgan', 'srresnet', 'vit']
+MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae']
 
 basic_configs = {
     # Data
@@ -63,6 +65,14 @@ srgan_configs = {
     'vgg19_i': 5,
     'vgg19_j': 4,
     'beta': 1e-3,
+}
+
+vit_configs = {
+
+}
+
+mae_configs = {
+
 }
 
 # Set cuda device here
@@ -140,13 +150,13 @@ def run(basic_configs, model_configs):
     elif basic_configs['model_name'] == 'vit':
         raise NotImplementedError
 
-        # Custom dataloaders
+    # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
     full_train_dataset = SRDataset(basic_configs['data_dir'],
                             type='train',
                             crop_size=basic_configs['crop_size'],
                             scaling_factor=basic_configs['scaling_factor'],
                             lr_img_type='imagenet-norm',
-                            hr_img_type='imagenet-norm')
+                            hr_img_type='[-1, 1]')
     val_size = int(basic_configs['val_proportion'] * len(full_train_dataset))
     train_size = len(full_train_dataset) - val_size
     # Train/Valid split
@@ -259,6 +269,9 @@ def train_single_model(model_name,
             start_time = time.time()
             model.eval()
             loss_history = []
+            psnr, ssim, mse, nmi, dist_= [], [], [], [], []
+            loss_fn_alex = lpips.LPIPS(net='alex') # Need [-1, 1]
+            loss_fn_alex.to(device)
             with torch.no_grad():
                 with tqdm(valid_data_loader, unit='batch') as vepoch:
                     for batch in vepoch:
@@ -270,16 +283,35 @@ def train_single_model(model_name,
                         hr_imgs = hr_imgs.to(device) 
 
                         # Forward the model
-                        sr_imgs_pred = model(lr_imgs)
+                        sr_imgs_pred = model(lr_imgs) # Will be [-1, 1]
 
                         loss = criterion(sr_imgs_pred, hr_imgs)
                         loss_history.append(loss.item())
                         vepoch.set_postfix(loss=loss.item())
+                            
+                        dist = loss_fn_alex.forward(sr_imgs_pred, hr_imgs)
+                        dist_.append(dist.mean().item())
+                        
+                        # yimgs = image_converter(sr_imgs_pred.cpu().detach().numpy(), 
+                        #     source='[-1, 1]', target='[0, 255]')
+                        # gtimgs = image_converter(hr_imgs.cpu().detach().numpy(), 
+                        #     source='[-1, 1]', target='[0, 255]')
+                        yimgs = sr_imgs_pred.cpu().detach().numpy() # Simple [-1, 1]
+                        gtimgs = hr_imgs.cpu().detach().numpy()
+                        for yimg, gtimg in zip(yimgs, gtimgs):
+                            psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg))
+                            ssim.append(skimage.metrics.structural_similarity(yimg, gtimg, channel_axis=0))
+                            mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
+                            nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
+                        
             end_time = time.time()
             loss_val = np.mean(loss_history)
             print('Valid at epoch: {0}----Loss {loss:.4f}'
                 '----Time: {time} secs'.format(epoch, 
                 loss=loss_val, time=end_time-start_time))
+            print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
+                % (np.mean(psnr), np.mean(ssim), 
+                    np.mean(mse), np.mean(nmi), np.mean(dist_)))
 
         if not os.path.exists('./save'):
             os.makedirs('./save')
@@ -319,14 +351,15 @@ def train_generative_adversarial_model(model_name,
 
                 # Forward the generator
                 sr_imgs_pred = generator(lr_imgs)
-                sr_imgs = image_converter(sr_imgs, source='[-1, 1]', target='imagenet-norm')
+                sr_imgs_pred = image_converter(sr_imgs_pred, source='[-1, 1]', target='imagenet-norm')
+                hr_imgs = image_converter(hr_imgs, source='[-1, 1]', target='imagenet-norm')
 
                 # Calculate VGG feature maps for the super-resolved (SR) and high resolution (HR) images
-                sr_imgs_in_vgg_space = loss_computer(sr_imgs)
+                sr_imgs_in_vgg_space = loss_computer(sr_imgs_pred)
                 hr_imgs_in_vgg_space = loss_computer(hr_imgs).detach()
 
                 # Discriminate super-resolved (SR) images
-                sr_discriminated = discriminator(sr_imgs)  # (N)
+                sr_discriminated = discriminator(sr_imgs_pred)  # (N)
 
                 # Calculate the Perceptual loss
                 content_loss = content_loss_criterion(sr_imgs_in_vgg_space, hr_imgs_in_vgg_space)
@@ -354,7 +387,7 @@ def train_generative_adversarial_model(model_name,
 
                 # Discriminate super-resolution (SR) and high-resolution (HR) images
                 hr_discriminated = discriminator(hr_imgs)
-                sr_discriminated = discriminator(sr_imgs.detach())
+                sr_discriminated = discriminator(sr_imgs_pred.detach())
                 # But didn't we already discriminate the SR images earlier, before updating the generator (G)? Why not just use that here?
                 # Because, if we used that, we'd be back-propagating (finding gradients) over the G too when backward() is called
                 # It's actually faster to detach the SR images from the G and forward-prop again, than to back-prop. over the G unnecessarily
