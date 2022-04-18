@@ -20,7 +20,7 @@ MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae']
 
 basic_configs = {
     # Data
-    'data_dir': 'val2014',
+    'data_dir': 'train2014',
     'crop_size': 96,
     'scaling_factor': 4,
     'num_workers': 4,
@@ -33,7 +33,7 @@ basic_configs = {
     'checkpoint': None,
     'epochs':100, # number of training iterations
     # 'start_epoch': 0,
-    'eval_per_epochs': 1,
+    'eval_per_epochs': 5,
     'learning_rate': 1e-5,
     'lr_scheduler': None,
     'lr_scheduler_parameters': {
@@ -312,13 +312,13 @@ def train_single_model(model_name,
                 % (np.mean(psnr), np.mean(ssim), 
                     np.mean(mse), np.mean(nmi), np.mean(dist_)))
 
-        if not os.path.exists('./save'):
-            os.makedirs('./save')
-        if save:
+        if not os.path.exists(f'./save/{model_name}'):
+            os.makedirs(f'./save/{model_name}')
+        if save and (epoch + 1) % 5:
             torch.save({'epoch': epoch,
                     'model': model,
                     'optimizer': optimizer},
-                    f'./save/{model_name}_checkpoint_{epoch}.pth.tar')
+                    f'./save/{model_name}/{model_name}_checkpoint_{epoch}.pth.tar')
 
 
 def train_generative_adversarial_model(model_name,
@@ -461,9 +461,9 @@ def train_generative_adversarial_model(model_name,
                 % (np.mean(psnr), np.mean(ssim), 
                     np.mean(mse), np.mean(nmi), np.mean(dist_)))
         
-        if not os.path.exists('./save'):
-            os.makedirs('./save')
-        if save:
+        if not os.path.exists(f'./save/{model_name}'):
+            os.makedirs(f'./save/{model_name}')
+        if save and (epoch + 1) % 5:
             torch.save({'epoch': epoch,
                     'generator': generator,
                     'discriminator': discriminator,

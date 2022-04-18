@@ -35,6 +35,12 @@ class BaseDataset(Dataset):
         return img
 
 class SRDataset(BaseDataset):
+    '''
+    This dataset allow to use the common CV dataset (COCO) to 
+    generate SR dataset, instead of using the dedicaded dataset
+    (like DIV2K). Note: The list of the dataset should only contain
+    the image path.
+    '''
 
     def __init__(self, dataset_name: str, type: str, 
         crop_size, scaling_factor, lr_img_type, hr_img_type) -> None:
@@ -65,3 +71,6 @@ class SRDataset(BaseDataset):
         img =  super().__getitem__(index)
         lr_img, hr_img = self.transform(img)
         return lr_img, hr_img
+
+class PureSRDataset(BaseDataset):
+    pass
