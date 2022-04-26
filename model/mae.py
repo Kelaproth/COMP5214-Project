@@ -31,6 +31,10 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
+import util.misc as misc
+from util.misc import NativeScalerWithGradNormCount as NativeScaler
+import util.optim_factory as optim_factory
+
 
 # From PyTorch internals
 def _ntuple(n):
@@ -144,7 +148,7 @@ class Block(nn.Module):
 
     def __init__(
             self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0., init_values=None,
-            drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+            drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, qk_scale=None):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
@@ -450,9 +454,11 @@ def mae_vit_huge_patch14_dec512d8b(**kwargs):
 
 
 # set recommended archs
-mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
+# def model_dic()
+#     mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
+#     mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
+#     mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
@@ -547,63 +553,63 @@ def main(args):
     dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)
 
-    # if True:  # args.distributed:
-    #     num_tasks = misc.get_world_size()
-    #     global_rank = misc.get_rank()
-    #     sampler_train = torch.utils.data.DistributedSampler(
-    #         dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-    #     )
-    #     print("Sampler_train = %s" % str(sampler_train))
-    # else:
-    #     sampler_train = torch.utils.data.RandomSampler(dataset_train)
+    if True:  # args.distributed:
+        num_tasks = misc.get_world_size()
+        global_rank = misc.get_rank()
+        sampler_train = torch.utils.data.DistributedSampler(
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        print("Sampler_train = %s" % str(sampler_train))
+    else:
+        sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
-    # if global_rank == 0 and args.log_dir is not None:
-    #     os.makedirs(args.log_dir, exist_ok=True)
-    #     log_writer = SummaryWriter(log_dir=args.log_dir)
-    # else:
-    #     log_writer = None
+    if global_rank == 0 and args.log_dir is not None:
+        os.makedirs(args.log_dir, exist_ok=True)
+        log_writer = SummaryWriter(log_dir=args.log_dir)
+    else:
+        log_writer = None
 
-    # data_loader_train = torch.utils.data.DataLoader(
-    #     dataset_train, sampler=sampler_train,
-    #     batch_size=args.batch_size,
-    #     num_workers=args.num_workers,
-    #     pin_memory=args.pin_mem,
-    #     drop_last=True,
-    # )
+    data_loader_train = torch.utils.data.DataLoader(
+        dataset_train, sampler=sampler_train,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=True,
+    )
     
     # # define the model
-    # model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
+    model = mae_vit_large_patch16_dec512d8b(norm_pix_loss=args.norm_pix_loss)
 
-    # model.to(device)
+    model.to(device)
 
-    # model_without_ddp = model
-    # print("Model = %s" % str(model_without_ddp))
+    model_without_ddp = model
+    print("Model = %s" % str(model_without_ddp))
 
-    # eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
+    eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     
-    # if args.lr is None:  # only base_lr is specified
-    #     args.lr = args.blr * eff_batch_size / 256
+    if args.lr is None:  # only base_lr is specified
+        args.lr = args.blr * eff_batch_size / 256
 
-    # print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-    # print("actual lr: %.2e" % args.lr)
+    print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+    print("actual lr: %.2e" % args.lr)
 
-    # print("accumulate grad iterations: %d" % args.accum_iter)
-    # print("effective batch size: %d" % eff_batch_size)
+    print("accumulate grad iterations: %d" % args.accum_iter)
+    print("effective batch size: %d" % eff_batch_size)
 
-    # if args.distributed:
-    #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-    #     model_without_ddp = model.module
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        model_without_ddp = model.module
     
-    # # following timm: set wd as 0 for bias and norm layers
-    # param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
-    # optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-    # print(optimizer)
-    # loss_scaler = NativeScaler()
+    # following timm: set wd as 0 for bias and norm layers
+    param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    print(optimizer)
+    loss_scaler = NativeScaler()
 
-    # misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    # print(f"Start training for {args.epochs} epochs")
-    # start_time = time.time()
+    print(f"Start training for {args.epochs} epochs")
+    start_time = time.time()
     # for epoch in range(args.start_epoch, args.epochs):
     #     if args.distributed:
     #         data_loader_train.sampler.set_epoch(epoch)
@@ -638,6 +644,3 @@ if __name__ == '__main__':
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
-
-    
-    print('all correct 1')
