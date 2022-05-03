@@ -11,7 +11,7 @@ from torch.utils.data import random_split
 # from eval import eval #import evaluation functions
 from model.srgan import Generator, Discriminator, TruncatedVGG19
 from model.srresnet import SRResNet
-from dataset import SRDataset
+from dataset import SRSampingDataset
 from utils import image_converter
 import skimage
 import lpips
@@ -20,14 +20,14 @@ MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae']
 
 basic_configs = {
     # Data
-    'data_dir': 'train2014',
+    'data_dir': 'val2014',
     'crop_size': 96,
     'scaling_factor': 4,
     'num_workers': 4,
     'val_proportion': 0.05,
 
     # Training
-    'model_name': 'srresnet',
+    'model_name': 'srgan',
     'device': 'cuda', # cpu or cuda
     'batch_size': 16, 
     'checkpoint': None,
@@ -57,7 +57,7 @@ srgan_configs = {
     'n_channels_g': 64,
     'n_blocks_g': 16,
 
-    'srresnet_checkpoint': "./checkpoint_srresnet.pth.tar",
+    'srresnet_checkpoint': './save/srresnet_checkpoint_99.pth.tar',
     'kernel_size_d': 3,
     'n_channels_d': 64,
     'n_blocks_d': 8,
@@ -149,9 +149,11 @@ def run(basic_configs, model_configs):
 
     elif basic_configs['model_name'] == 'vit':
         raise NotImplementedError
+    elif basic_configs['model_name'] == 'mae':
+        raise NotImplementedError
 
     # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
-    full_train_dataset = SRDataset(basic_configs['data_dir'],
+    full_train_dataset = SRSampingDataset(basic_configs['data_dir'],
                             type='train',
                             crop_size=basic_configs['crop_size'],
                             scaling_factor=basic_configs['scaling_factor'],

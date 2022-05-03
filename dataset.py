@@ -34,7 +34,7 @@ class BaseDataset(Dataset):
         img = img.convert('RGB')
         return img
 
-class SRDataset(BaseDataset):
+class SRSampingDataset(BaseDataset):
     '''
     This dataset allow to use the common CV dataset (COCO) to 
     generate SR dataset, instead of using the dedicaded dataset
@@ -72,5 +72,5 @@ class SRDataset(BaseDataset):
         lr_img, hr_img = self.transform(img)
         return lr_img, hr_img
 
-class PureSRDataset(BaseDataset):
+class SROriginDataset(BaseDataset):
     pass
