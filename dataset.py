@@ -3,7 +3,7 @@ import json
 import os
 from PIL import Image
 
-from utils import ImageSampler
+from utils import ImageSampler, image_converter
 
 class BaseDataset(Dataset):
 
@@ -68,9 +68,26 @@ class SRSampingDataset(BaseDataset):
                                         hr_img_type=self.hr_img_type)
 
     def __getitem__(self, index):
-        img =  super().__getitem__(index)
+        img = super().__getitem__(index)
         lr_img, hr_img = self.transform(img)
         return lr_img, hr_img
 
 class SROriginDataset(BaseDataset):
-    pass
+    '''
+    This dataset use the dedicaded dataset (like DIV2K). 
+    Note: The list of the dataset should only contain the image path. 
+    You need 2 separate call to load hr and lr images separately.
+    '''
+    def __init__(self, dataset_name: str, type: str, 
+        img_type) -> None:
+        super().__init__(dataset_name, type)
+
+        self.img_type = img_type
+
+        assert img_type in {'[0, 255]', '[0, 1]', '[-1, 1]', 'imagenet-norm'}
+        self.convertor = image_converter
+
+    def __getitem__(self, index):
+        img = super().__getitem__(index)
+        img = self.convertor(img, source='pil', target=self.img_type)
+        return img
