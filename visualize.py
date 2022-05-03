@@ -2,8 +2,9 @@ import torch
 from utils import image_converter
 from PIL import Image, ImageDraw, ImageFont
 from train import MODEL_LIST
+from model.ipt import quantize
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model checkpoint configuration
 checkpoint = "./save/srresnet_checkpoint_99.pth.tar"
@@ -23,11 +24,20 @@ def load_model(checkpoint_path, model_type, device):
         model.eval()
     elif model_type == 'mae':
         model = torch.load(checkpoint_path)['model'].to(device)
-        model.eval()        
-
+        model.eval()
+    # elif model_type == 'ipt':     
+    #     checkpoint = Checkpoint(args)
+    #     if checkpoint.ok:
+    #         model = Model(args, checkpoint)
+    #         if args.pretrain == '':
+    #             args.pretrain = "./save/ipt/IPT_sr4.pt"
+    #         state_dict = torch.load(args.pretrain)
+    #         model.model.load_state_dict(state_dict, strict = False)
+    #         model.to(device)
+    #         model.eval()
     return model
 
-def visualize_sampling(img, model_type, model, halve=False):
+def visualize_sampling(img, model_type, model, device, halve=False):
     """
     Visualizes the super-resolved images from the SRResNet and SRGAN for comparison with the bicubic-upsampled image
     and the original high-resolution (HR) image, as done in the paper.
@@ -63,6 +73,11 @@ def visualize_sampling(img, model_type, model, halve=False):
         sr_img = model(image_converter(lr_img, source='pil', target='imagenet-norm').unsqueeze(0).to(device))
         sr_img = sr_img.squeeze(0).cpu().detach()
         sr_img = image_converter(sr_img, source='[-1, 1]', target='pil')
+    elif model_type == 'ipt':
+        sr_img = model(image_converter(lr_img, source='pil', target='[0, 255]').unsqueeze(0).to(device), 0)
+        sr_img = quantize(sr_img)
+        sr_img = sr_img.squeeze(0).cpu().detach()
+        sr_img = image_converter(sr_img, source='[0, 255]', target='pil')
 
     # Create grid
     margin = 40
@@ -139,6 +154,12 @@ def visualize_original(lr_img_path, hr_img_path, model_type, model, halve=False)
         sr_img = model(image_converter(lr_img, source='pil', target='imagenet-norm').unsqueeze(0).to(device))
         sr_img = sr_img.squeeze(0).cpu().detach()
         sr_img = image_converter(sr_img, source='[-1, 1]', target='pil')
+    elif model_type == 'ipt':
+        sr_img = model(image_converter(lr_img, source='pil', target='[0, 255]').unsqueeze(0).to(device), 0)
+        sr_img = quantize(sr_img)
+        sr_img = sr_img.squeeze(0).cpu().detach()
+        sr_img = image_converter(sr_img, source='[0, 255]', target='pil')
+
 
     # Create grid
     margin = 40
@@ -182,5 +203,6 @@ def visualize_original(lr_img_path, hr_img_path, model_type, model, halve=False)
 
 
 if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(checkpoint, model_type, device)
-    grid_img = visualize_sampling("./test/1.jpg", model_type, model)
+    grid_img = visualize_sampling("./test/2.png", model_type, model, device)

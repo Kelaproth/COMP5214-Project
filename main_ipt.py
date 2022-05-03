@@ -1,4 +1,14 @@
-from model.ipt import make_model
+from model.ipt import Model, Checkpoint, quantize
+import argparse
+import torch
+import lpips
+from dataset import SRSamplingDataset
+import skimage
+import numpy as np
+from tqdm import tqdm
+
+from utils import image_converter
+from visualize import visualize_sampling
 
 # args = {
 #     # All the args for the IPT
@@ -90,7 +100,74 @@ from model.ipt import make_model
 # 2021.05.07-Changed for IPT
 #            Huawei Technologies Co., Ltd. <foss@huawei.com>
 
-import argparse
+
+
+def main_ipt(args, mode, img_path=None):
+    checkpoint = Checkpoint(args)
+    if checkpoint.ok:
+        model = Model(args, checkpoint)
+        if args.pretrain == '':
+            args.pretrain = "./save/ipt/IPT_sr4.pt"
+        state_dict = torch.load(args.pretrain)
+        model.model.load_state_dict(state_dict, strict = False)
+    
+        if mode == 'test':
+            test_ipt(args, model)
+        if mode == 'visual':
+            model.eval()
+            device = torch.device("cpu" if args.cpu else "cuda")
+            visualize_sampling(img_path, 'ipt', model, device)
+
+def test_ipt(args, model):
+
+    device = torch.device("cuda" if not args.cpu else "cpu")
+
+    dataset = 'set5'
+    test_dataset = SRSamplingDataset(dataset,
+                        type='test',
+                        crop_size=0,
+                        scaling_factor=4,
+                        lr_img_type='[0, 255]',
+                        hr_img_type='[0, 255]')
+    test_loader = torch.utils.data.DataLoader(test_dataset, 
+                            batch_size=1, 
+                            shuffle=True, num_workers=4,
+                                            pin_memory=True)   
+
+    model.to(device)
+    model.eval()
+    psnr, ssim, mse, nmi, dist_= [], [], [], [], []
+    loss_fn_alex = lpips.LPIPS(net='alex') # Need [-1, 1]
+    loss_fn_alex.to(device)
+    with torch.no_grad():
+        with tqdm(test_loader, unit='batch') as vepoch:
+            for batch in vepoch:
+
+                # Prepare Data
+                lr_imgs, hr_imgs = batch
+                lr_imgs = lr_imgs.to(device)
+                hr_imgs = hr_imgs.to(device) 
+
+                # Forward the model
+                sr_imgs_pred = model(lr_imgs, 0) # This time will be [0, 255] and is float
+
+                yimgs = quantize(sr_imgs_pred) 
+                yimgs = yimgs.cpu().detach().numpy() 
+                gtimgs = hr_imgs.cpu().detach().numpy()
+                    
+                dist = loss_fn_alex.forward(sr_imgs_pred, hr_imgs)
+                dist_.append(dist.mean().item())
+                
+                for yimg, gtimg in zip(yimgs, gtimgs):
+                    psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg, data_range=255))
+                    ssim.append(skimage.metrics.structural_similarity(yimg, gtimg, channel_axis=0))
+                    mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
+                    nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
+
+    print("Test finished")
+    print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
+        % (np.mean(psnr), np.mean(ssim), 
+            np.mean(mse), np.mean(nmi), np.mean(dist_)))
 
 if __name__ == '__main__':
 
@@ -112,7 +189,7 @@ if __name__ == '__main__':
                         help='random seed')
 
     # Data specifications
-    parser.add_argument('--dir_data', type=str, default='/cache/data/',
+    parser.add_argument('--dir_data', type=str, default='./data/',
                         help='dataset directory')
     parser.add_argument('--dir_demo', type=str, default='../test',
                         help='demo image directory')
@@ -258,5 +335,4 @@ if __name__ == '__main__':
         elif vars(args)[arg] == 'False':
             vars(args)[arg] = False
 
-    model = make_model(args)
-    print(model)
+    main_ipt(args, mode = 'visual', img_path="./test/1.jpg")

@@ -21,8 +21,8 @@ MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae', 'ipt']
 
 basic_configs = {
     # Data
-    'data_dir': 'div2k',
-    # 'data_dir': 'val2014',
+    # 'data_dir': 'div2k',
+    'data_dir': 'val2014',
     'crop_size': 96,
     'scaling_factor': 4,
     'num_workers': 4,
