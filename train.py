@@ -15,19 +15,21 @@ from dataset import SRSamplingDataset
 from utils import image_converter
 import skimage
 import lpips
+from model.mae import prepare_mae
 
 MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae', 'ipt']
 
 basic_configs = {
     # Data
-    'data_dir': 'val2014',
+    'data_dir': 'div2k',
+    # 'data_dir': 'val2014',
     'crop_size': 96,
     'scaling_factor': 4,
     'num_workers': 4,
     'val_proportion': 0.05,
 
     # Training
-    'model_name': 'srresnet',
+    'model_name': 'mae',
     'device': 'cuda', # cpu or cuda
     'batch_size': 16, 
     'checkpoint': None,
@@ -154,7 +156,8 @@ def run(basic_configs, model_configs):
     elif basic_configs['model_name'] == 'vit':
         raise NotImplementedError
     elif basic_configs['model_name'] == 'mae':
-        raise NotImplementedError
+        model, optimizer = prepare_mae()
+        criterion = nn.MSELoss()
 
     # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
     full_train_dataset = SRSamplingDataset(basic_configs['data_dir'],
@@ -221,7 +224,113 @@ def run(basic_configs, model_configs):
                                             grad_clip=basic_configs['grad_clip'],
                                             lr_scheduler=learning_rate_scheduler,
                                             save=basic_configs['save'])
+    elif basic_configs['model_name'] in ['mae']:
+        train_mae(model_name=basic_configs['model_name'],
+                                            train_data_loader=train_loader,
+                                            valid_data_loader=val_loader,
+                                            model=model,
+                                            optimizer=optimizer,
+                                            criterion=criterion,
+                                            epochs=basic_configs['epochs'],
+                                            eval_per_epochs=basic_configs['eval_per_epochs'],
+                                            device=device,
+                                            grad_clip=basic_configs['grad_clip'],
+                                            lr_scheduler=learning_rate_scheduler,
+                                            save=basic_configs['save']
+                                            )
 
+########################################################
+### Training Mae. Model is initilaized in model.mae  ###
+########################################################
+def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer, criterion, 
+                        epochs, eval_per_epochs, device, 
+                        grad_clip=None, lr_scheduler=None, save=False):
+
+    for epoch in range(epochs):
+        model.train()
+        start_time = time.time()
+        loss_history = []
+        with tqdm(train_data_loader, unit='batch') as tepoch:
+            for batch in tepoch:
+                tepoch.set_description(f"Epoch {epoch}")
+                
+                optimizer.zero_grad()
+
+                lr_imgs, hr_imgs = batch
+                lr_imgs = lr_imgs.to(device)
+                hr_imgs = hr_imgs.to(device)
+                # print(lr_imgs.size(), hr_imgs.size(), hr_imgs.size()[2])
+                _, _, sr_imgs_pred = model(lr_imgs)
+
+                loss = criterion(sr_imgs_pred, hr_imgs)
+                loss.backward()
+                loss_history.append(loss.item())
+                tepoch.set_postfix(loss=loss.item())
+
+        end_time = time.time()
+        loss_train = np.mean(loss_history)
+        
+        print('Epoch: {0}----Loss {loss:.4f}'
+            '----Time: {time} secs'.format(epoch, 
+            loss=loss_train, time=end_time-start_time))
+
+        # Do evaluation
+        if (epoch + 1) % eval_per_epochs == 0:
+            start_time = time.time()
+            model.eval()
+            loss_history = []
+            psnr, ssim, mse, nmi, dist_= [], [], [], [], []
+            loss_fn_alex = lpips.LPIPS(net='alex') # Need [-1, 1]
+            loss_fn_alex.to(device)
+            with torch.no_grad():
+                with tqdm(valid_data_loader, unit='batch') as vepoch:
+                    for batch in vepoch:
+                        vepoch.set_description(f"Valid at epoch {epoch}")
+
+                        # Prepare Data
+                        lr_imgs, hr_imgs = batch
+                        lr_imgs = lr_imgs.to(device)
+                        hr_imgs = hr_imgs.to(device) 
+
+                        # Forward the model
+                        _, _, sr_imgs_pred = model(lr_imgs) # Will be [-1, 1]
+
+                        loss = criterion(sr_imgs_pred, hr_imgs)
+                        loss_history.append(loss.item())
+                        vepoch.set_postfix(loss=loss.item())
+                            
+                        dist = loss_fn_alex.forward(sr_imgs_pred, hr_imgs)
+                        dist_.append(dist.mean().item())
+                        
+                        # yimgs = image_converter(sr_imgs_pred.cpu().detach().numpy(), 
+                        #     source='[-1, 1]', target='[0, 255]')
+                        # gtimgs = image_converter(hr_imgs.cpu().detach().numpy(), 
+                        #     source='[-1, 1]', target='[0, 255]')
+                        yimgs = sr_imgs_pred.cpu().detach().numpy() # Simple [-1, 1]
+                        gtimgs = hr_imgs.cpu().detach().numpy()
+                        for yimg, gtimg in zip(yimgs, gtimgs):
+                            psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg))
+                            ssim.append(skimage.metrics.structural_similarity(yimg, gtimg, channel_axis=0))
+                            mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
+                            nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
+                        
+            end_time = time.time()
+            print('Valid at epoch: {0}----Loss {loss:.4f}'
+                '----Time: {time} secs'.format(epoch, 
+                loss=np.mean(loss_history), time=end_time-start_time))
+            print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
+                % (np.mean(psnr), np.mean(ssim), 
+                    np.mean(mse), np.mean(nmi), np.mean(dist_)))
+
+        if not os.path.exists(f'./save/{model_name}'):
+            os.makedirs(f'./save/{model_name}')
+        if save and (epoch + 1) % 5:
+            torch.save({'epoch': epoch,
+                    'model': model,
+                    'optimizer': optimizer},
+                    f'./save/{model_name}/{model_name}_checkpoint_{epoch}.pth.tar')
+
+         
 
 
 def train_single_model(model_name,
@@ -483,6 +592,8 @@ if __name__ == '__main__':
         model_configs = srresnet_configs
     elif basic_configs['model_name'] == 'srgan':
         model_configs = srgan_configs
+    elif basic_configs['model_name'] == 'mae':
+        model_configs = mae_configs
     else:
         raise NotImplementedError
 
