@@ -13,8 +13,7 @@ from functools import partial
 
 import torch
 import torch.nn as nn
-
-import timm.models.vision_transformer
+import timm.vision_transformer
 
 
 class VisionTransformer(timm.models.vision_transformer.VisionTransformer):

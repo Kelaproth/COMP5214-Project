@@ -1,23 +1,15 @@
-import os
-import time
 from tqdm import tqdm
 import numpy as np
 import torch
-from torch import ge, optim
-from torch import nn
-from torch.optim import lr_scheduler 
-from torch.nn.utils import clip_grad
-from torch.utils.data import random_split
-# from eval import eval #import evaluation functions
-from model.srgan import Generator, Discriminator, TruncatedVGG19
-from model.srresnet import SRResNet
-from dataset import SRDataset
+from dataset import SRSamplingDataset
 from utils import image_converter
 import skimage
 import lpips
 
-def show_sample_image():
-    pass
+# Configurations
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model_path = "./save/srresnet_checkpoint_99.pth.tar"
+test_datasets = ['set5', 'set14', 'urban100', 'bsd100']
 
 def test(test_data_loader, model, device):
     
@@ -52,7 +44,7 @@ def test(test_data_loader, model, device):
                     mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
                     nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
 
-    print("Test phase")
+    print("Test finished")
     print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
         % (np.mean(psnr), np.mean(ssim), 
             np.mean(mse), np.mean(nmi), np.mean(dist_)))
@@ -65,7 +57,8 @@ def test_on_multiple_dataset(datasets, model_path, device):
         model = torch.load(model_path)['model'].to(device)
 
     for dataset in datasets:
-        test_dataset = SRDataset(dataset,
+        print(f"Test one the dataset {dataset}")
+        test_dataset = SRSamplingDataset(dataset,
                         type='test',
                         crop_size=0,
                         scaling_factor=4,
@@ -76,3 +69,6 @@ def test_on_multiple_dataset(datasets, model_path, device):
                             shuffle=True, num_workers=4,
                                             pin_memory=True)                           
         test(test_loader, model, device)
+
+if __name__ == '__main__':
+    test_on_multiple_dataset()

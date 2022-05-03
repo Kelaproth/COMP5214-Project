@@ -11,13 +11,13 @@ from torch.utils.data import random_split
 # from eval import eval #import evaluation functions
 from model.srgan import Generator, Discriminator, TruncatedVGG19
 from model.srresnet import SRResNet
-from dataset import SRSampingDataset
+from dataset import SRSamplingDataset
 from utils import image_converter
 import skimage
 import lpips
 from model.mae import prepare_mae
 
-MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae']
+MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae', 'ipt']
 
 basic_configs = {
     # Data
@@ -74,6 +74,10 @@ vit_configs = {
 }
 
 mae_configs = {
+
+}
+
+ipt_configs = {
 
 }
 
@@ -156,7 +160,7 @@ def run(basic_configs, model_configs):
         criterion = nn.MSELoss()
 
     # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
-    full_train_dataset = SRSampingDataset(basic_configs['data_dir'],
+    full_train_dataset = SRSamplingDataset(basic_configs['data_dir'],
                             type='train',
                             crop_size=basic_configs['crop_size'],
                             scaling_factor=basic_configs['scaling_factor'],
@@ -425,7 +429,7 @@ def train_single_model(model_name,
 
         if not os.path.exists(f'./save/{model_name}'):
             os.makedirs(f'./save/{model_name}')
-        if save and (epoch + 1) % 5:
+        if save and (epoch + 1) % 5 == 0:
             torch.save({'epoch': epoch,
                     'model': model,
                     'optimizer': optimizer},
@@ -574,7 +578,7 @@ def train_generative_adversarial_model(model_name,
         
         if not os.path.exists(f'./save/{model_name}'):
             os.makedirs(f'./save/{model_name}')
-        if save and (epoch + 1) % 5:
+        if save and (epoch + 1) % 5 == 0:
             torch.save({'epoch': epoch,
                     'generator': generator,
                     'discriminator': discriminator,
