@@ -325,7 +325,7 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
 
         if not os.path.exists(f'./save/{model_name}'):
             os.makedirs(f'./save/{model_name}')
-        if save and (epoch + 1) % 5:
+        if save and (epoch + 1) % 5 == 0:
             torch.save({'epoch': epoch,
                     'model': model,
                     'optimizer': optimizer},
