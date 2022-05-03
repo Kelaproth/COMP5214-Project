@@ -267,6 +267,7 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                 loss_history.append(loss.item())
                 tepoch.set_postfix(loss=loss.item())
 
+
         end_time = time.time()
         loss_train = np.mean(loss_history)
         
@@ -275,7 +276,7 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
             loss=loss_train, time=end_time-start_time))
 
         # Do evaluation
-        if (epoch + 1) % eval_per_epochs == 0:
+        if (epoch + 1) % eval_per_epochs == 0 or epoch==0:
             start_time = time.time()
             model.eval()
             loss_history = []
@@ -309,7 +310,7 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                         yimgs = sr_imgs_pred.cpu().detach().numpy() # Simple [-1, 1]
                         gtimgs = hr_imgs.cpu().detach().numpy()
                         for yimg, gtimg in zip(yimgs, gtimgs):
-                            psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg))
+                            psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg, data_range=2))
                             ssim.append(skimage.metrics.structural_similarity(yimg, gtimg, channel_axis=0))
                             mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
                             nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
