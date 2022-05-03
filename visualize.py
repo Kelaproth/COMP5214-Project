@@ -76,8 +76,11 @@ def visualize_sampling(img, model_type, model, device, halve=False):
     elif model_type == 'ipt':
         sr_img = model(image_converter(lr_img, source='pil', target='[0, 255]').unsqueeze(0).to(device), 0)
         sr_img = quantize(sr_img)
-        sr_img = sr_img.squeeze(0).cpu().detach()
-        sr_img = image_converter(sr_img, source='[0, 255]', target='pil')
+        sr_img = sr_img.squeeze(0).cpu().detach().numpy()
+        print(hr_img.height, hr_img.width)
+        print(sr_img)
+        print(sr_img.shape)
+        sr_img = Image.fromarray(sr_img.astype('uint8').transpose(1, 2, 0), 'RGB')
 
     # Create grid
     margin = 40
@@ -202,7 +205,7 @@ def visualize_original(lr_img_path, hr_img_path, model_type, model, halve=False)
     return grid_img
 
 
-if __name__ == '__main__':
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(checkpoint, model_type, device)
-    grid_img = visualize_sampling("./test/2.png", model_type, model, device)
+# if __name__ == '__main__':
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model = load_model(checkpoint, model_type, device)
+#     grid_img = visualize_sampling("./test/2.png", model_type, model, device)

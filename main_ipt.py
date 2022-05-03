@@ -113,10 +113,11 @@ def main_ipt(args, mode, img_path=None):
     
         if mode == 'test':
             test_ipt(args, model)
-        if mode == 'visual':
+        elif mode == 'visual':
             model.eval()
             device = torch.device("cpu" if args.cpu else "cuda")
-            visualize_sampling(img_path, 'ipt', model, device)
+            with torch.no_grad(): # This can significant reduce the size in GPU memory...
+                visualize_sampling(img_path, 'ipt', model, device)
 
 def test_ipt(args, model):
 
@@ -147,6 +148,7 @@ def test_ipt(args, model):
                 lr_imgs, hr_imgs = batch
                 lr_imgs = lr_imgs.to(device)
                 hr_imgs = hr_imgs.to(device) 
+                # print(torch.cuda.memory_allocated(device=0))
 
                 # Forward the model
                 sr_imgs_pred = model(lr_imgs, 0) # This time will be [0, 255] and is float
@@ -335,4 +337,4 @@ if __name__ == '__main__':
         elif vars(args)[arg] == 'False':
             vars(args)[arg] = False
 
-    main_ipt(args, mode = 'visual', img_path="./test/1.jpg")
+    main_ipt(args, mode = 'visual', img_path="./test/2.png")
