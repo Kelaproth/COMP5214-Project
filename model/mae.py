@@ -32,9 +32,9 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-import util.misc as misc
-from util.misc import NativeScalerWithGradNormCount as NativeScaler
-import util.optim_factory as optim_factory
+import model.util.misc as misc
+from model.util.misc import NativeScalerWithGradNormCount as NativeScaler
+import model.util.optim_factory as optim_factory
 
 from typing import Iterable
 try:
@@ -239,7 +239,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
-    def __init__(self, img_size=224, patch_size=16, in_chans=3,
+    def __init__(self, img_size=24, patch_size=4, in_chans=3,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False):
@@ -272,7 +272,7 @@ class MaskedAutoencoderViT(nn.Module):
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # decoder to patch
+        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * 16 * in_chans, bias=True) # decoder to patch
         # --------------------------------------------------------------------------
 
         self.norm_pix_loss = norm_pix_loss
@@ -332,9 +332,9 @@ class MaskedAutoencoderViT(nn.Module):
         h = w = int(x.shape[1]**.5)
         assert h * w == x.shape[1]
         
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, 3))
+        x = x.reshape(shape=(x.shape[0], h, w, p * 4, p * 4, 3))
         x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], 3, h * p, h * p))
+        imgs = x.reshape(shape=(x.shape[0], 3, h * p * 4, h * p * 4))
         return imgs
 
     def random_masking(self, x, mask_ratio):
@@ -433,13 +433,14 @@ class MaskedAutoencoderViT(nn.Module):
     def forward(self, imgs, mask_ratio=0.75):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
-        return loss, pred, mask
+        # loss = self.forward_loss(imgs, pred, mask)
+        y = self.unpatchify(pred)
+        return pred, mask, y
 
 
 def mae_vit_base_patch16_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT(
-        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        patch_size=4, embed_dim=768, depth=12, num_heads=12,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
@@ -447,7 +448,7 @@ def mae_vit_base_patch16_dec512d8b(**kwargs):
 
 def mae_vit_large_patch16_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT(
-        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        patch_size=4, embed_dim=1024, depth=24, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
@@ -455,7 +456,7 @@ def mae_vit_large_patch16_dec512d8b(**kwargs):
 
 def mae_vit_huge_patch14_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT(
-        patch_size=14, embed_dim=1280, depth=32, num_heads=16,
+        patch_size=4, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
@@ -483,7 +484,7 @@ def get_args_parser():
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
 
-    parser.add_argument('--mask_ratio', default=0.75, type=float,
+    parser.add_argument('--mask_ratio', default=0.00, type=float,
                         help='Masking ratio (percentage of removed patches).')
 
     parser.add_argument('--norm_pix_loss', action='store_true',
@@ -505,7 +506,7 @@ def get_args_parser():
                         help='epochs to warmup LR')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='../../CycleSR/dataset/DIV2K/', type=str,
+    parser.add_argument('--data_path', default='../data/train/div2k/', type=str,
                         help='dataset path')
 
     parser.add_argument('--output_dir', default='./output_dir',
@@ -520,7 +521,7 @@ def get_args_parser():
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
@@ -550,68 +551,68 @@ def adjust_learning_rate(optimizer, epoch, args):
             param_group["lr"] = lr
     return lr
 
-def train_one_epoch(model: torch.nn.Module,
-                    data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler,
-                    log_writer=None,
-                    args=None):
-    model.train(True)
-    metric_logger = misc.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 20
+# def train_one_epoch(model: torch.nn.Module,
+#                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
+#                     device: torch.device, epoch: int, loss_scaler,
+#                     log_writer=None,
+#                     args=None):
+#     model.train(True)
+#     metric_logger = misc.MetricLogger(delimiter="  ")
+#     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+#     header = 'Epoch: [{}]'.format(epoch)
+#     print_freq = 20
 
-    accum_iter = args.accum_iter
+#     accum_iter = args.accum_iter
 
-    optimizer.zero_grad()
+#     optimizer.zero_grad()
 
-    if log_writer is not None:
-        print('log_dir: {}'.format(log_writer.log_dir))
+#     if log_writer is not None:
+#         print('log_dir: {}'.format(log_writer.log_dir))
 
-    for data_iter_step, (samples, _) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+#     for data_iter_step, (samples, _) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
 
-        # we use a per iteration (instead of per epoch) lr scheduler
-        if data_iter_step % accum_iter == 0:
-            adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+#         # we use a per iteration (instead of per epoch) lr scheduler
+#         if data_iter_step % accum_iter == 0:
+#             adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        samples = samples.to(device, non_blocking=True)
+#         samples = samples.to(device, non_blocking=True)
 
-        with torch.cuda.amp.autocast():
-            loss, _, _ = model(samples, mask_ratio=args.mask_ratio)
+#         with torch.cuda.amp.autocast():
+#             loss, _, _ = model(samples, mask_ratio=args.mask_ratio)
 
-        loss_value = loss.item()
+#         loss_value = loss.item()
 
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            sys.exit(1)
+#         if not math.isfinite(loss_value):
+#             print("Loss is {}, stopping training".format(loss_value))
+#             sys.exit(1)
 
-        loss /= accum_iter
-        loss_scaler(loss, optimizer, parameters=model.parameters(),
-                    update_grad=(data_iter_step + 1) % accum_iter == 0)
-        if (data_iter_step + 1) % accum_iter == 0:
-            optimizer.zero_grad()
+#         loss /= accum_iter
+#         loss_scaler(loss, optimizer, parameters=model.parameters(),
+#                     update_grad=(data_iter_step + 1) % accum_iter == 0)
+#         if (data_iter_step + 1) % accum_iter == 0:
+#             optimizer.zero_grad()
 
-        torch.cuda.synchronize()
+#         torch.cuda.synchronize()
 
-        metric_logger.update(loss=loss_value)
+#         metric_logger.update(loss=loss_value)
 
-        lr = optimizer.param_groups[0]["lr"]
-        metric_logger.update(lr=lr)
+#         lr = optimizer.param_groups[0]["lr"]
+#         metric_logger.update(lr=lr)
 
-        loss_value_reduce = misc.all_reduce_mean(loss_value)
-        if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-            """ We use epoch_1000x as the x-axis in tensorboard.
-            This calibrates different curves when batch size changes.
-            """
-            epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-            log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
-            log_writer.add_scalar('lr', lr, epoch_1000x)
+#         loss_value_reduce = misc.all_reduce_mean(loss_value)
+#         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
+#             """ We use epoch_1000x as the x-axis in tensorboard.
+#             This calibrates different curves when batch size changes.
+#             """
+#             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
+#             log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
+#             log_writer.add_scalar('lr', lr, epoch_1000x)
 
 
-    # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+#     # gather the stats from all processes
+#     metric_logger.synchronize_between_processes()
+#     print("Averaged stats:", metric_logger)
+#     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 def main(args):
     misc.init_distributed_mode(args)
@@ -634,35 +635,35 @@ def main(args):
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'trainA'), transform=transform_train)
-    print(dataset_train)
+    # dataset_train = datasets.ImageFolder((args.data_path), transform=transform_train)
+    # print(dataset_train)
 
-    if True:  # args.distributed:
-        num_tasks = misc.get_world_size()
-        global_rank = misc.get_rank()
-        sampler_train = torch.utils.data.DistributedSampler(
-            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-        )
-        print("Sampler_train = %s" % str(sampler_train))
-    else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+    # if True:  # args.distributed:
+    #     num_tasks = misc.get_world_size()
+    #     global_rank = misc.get_rank()
+    #     sampler_train = torch.utils.data.DistributedSampler(
+    #         dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+    #     )
+    #     print("Sampler_train = %s" % str(sampler_train))
+    # else:
+    #     sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
-    if global_rank == 0 and args.log_dir is not None:
-        os.makedirs(args.log_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
-    else:
-        log_writer = None
+    # if global_rank == 0 and args.log_dir is not None:
+    #     os.makedirs(args.log_dir, exist_ok=True)
+    #     log_writer = SummaryWriter(log_dir=args.log_dir)
+    # else:
+    #     log_writer = None
 
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
+    # data_loader_train = torch.utils.data.DataLoader(
+    #     dataset_train, sampler=sampler_train,
+    #     batch_size=args.batch_size,
+    #     num_workers=args.num_workers,
+    #     pin_memory=args.pin_mem,
+    #     drop_last=True,
+    # )
     
     # # define the model
-    model = mae_vit_large_patch16_dec512d8b(norm_pix_loss=args.norm_pix_loss)
+    model = mae_vit_base_patch16_dec512d8b(norm_pix_loss=args.norm_pix_loss)
 
     model.to(device)
 
@@ -687,45 +688,48 @@ def main(args):
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-    print(optimizer)
+    # print(optimizer)
     loss_scaler = NativeScaler()
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+    return model, optimizer
 
-        train_stats = train_one_epoch(
-            model, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            log_writer=log_writer,
-            args=args
-        )
-        if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
+    # print(f"Start training for {args.epochs} epochs")
+    # start_time = time.time()
+    # for epoch in range(args.start_epoch, args.epochs):
+    #     if args.distributed:
+    #         data_loader_train.sampler.set_epoch(epoch)
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        'epoch': epoch,}
+    #     train_stats = train_one_epoch(
+    #         model, data_loader_train,
+    #         optimizer, device, epoch, loss_scaler,
+    #         log_writer=log_writer,
+    #         args=args
+    #     )
+    #     if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
+    #         misc.save_model(
+    #             args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+    #             loss_scaler=loss_scaler, epoch=epoch)
 
-        if args.output_dir and misc.is_main_process():
-            if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+    #     log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+    #                     'epoch': epoch,}
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+    #     if args.output_dir and misc.is_main_process():
+    #         if log_writer is not None:
+    #             log_writer.flush()
+    #         with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+    #             f.write(json.dumps(log_stats) + "\n")
+
+    # total_time = time.time() - start_time
+    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    # print('Training time {}'.format(total_time_str))
 
 
-if __name__ == '__main__':
+# if __name__ == '__main__':
+def prepare_mae():
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    main(args)
+    return main(args)
