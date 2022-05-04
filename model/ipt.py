@@ -5,6 +5,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.parallel as P
+import torch.utils.model_zoo
+import torch.optim as optim
+import torch.optim.lr_scheduler as lrs
 from einops import rearrange
 import copy
 import os
@@ -15,6 +19,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import numpy as np
+from multiprocessing import Process
+from multiprocessing import Queue
+import datetime
+import time
+import imageio
 
 
 def default_conv(in_channels, out_channels, kernel_size, bias=True):
@@ -519,3 +528,368 @@ class Loss(nn.modules.loss._Loss):
             if hasattr(l, 'scheduler'):
                 for _ in range(len(self.log)): l.scheduler.step()
 
+#######################################################
+
+#######################################################
+class Model(nn.Module):
+    def __init__(self, args, ckp):
+        super(Model, self).__init__()
+        print('Making model...')
+        self.args = args
+        self.scale = args.scale
+        self.patch_size = args.patch_size
+        self.idx_scale = 0
+        self.input_large = (args.model == 'VDSR')
+        self.self_ensemble = args.self_ensemble
+        self.precision = args.precision
+        self.cpu = args.cpu
+        self.device = torch.device('cpu' if args.cpu else 'cuda')
+        self.n_GPUs = args.n_GPUs
+        self.save_models = args.save_models
+        
+        module = import_module('model.' + args.model.lower())
+        self.model = module.make_model(args).to(self.device)
+        if args.precision == 'half':
+            self.model.half()
+
+        self.load(
+            ckp.get_path('model'),
+            resume=args.resume,
+            cpu=args.cpu
+        )
+        print(self.model, file=ckp.log_file)
+
+    def forward(self, x, idx_scale):
+        self.idx_scale = idx_scale
+        
+        if hasattr(self.model, 'set_scale'):
+            self.model.set_scale(idx_scale)
+
+        if self.training:
+            if self.n_GPUs > 1:
+                return P.data_parallel(self.model, x, range(self.n_GPUs))
+            else:
+                return self.model(x)
+        else:
+            forward_function = self.forward_chop
+
+            if self.self_ensemble:
+                return self.forward_x8(x, forward_function=forward_function)
+            else:
+                return forward_function(x)
+
+    def save(self, apath, epoch, is_best=False):
+        save_dirs = [os.path.join(apath, 'model_latest.pt')]
+
+        if is_best:
+            save_dirs.append(os.path.join(apath, 'model_best.pt'))
+        if self.save_models:
+            save_dirs.append(
+                os.path.join(apath, 'model_{}.pt'.format(epoch))
+            )
+
+        for s in save_dirs:
+            torch.save(self.model.state_dict(), s)
+
+    def load(self, apath, pre_train='', resume=-1, cpu=False):
+        load_from = None
+        kwargs = {}
+        if cpu:
+            kwargs = {'map_location': lambda storage, loc: storage}
+
+        if resume == -1:
+            load_from = torch.load(
+                os.path.join(apath, 'model_latest.pt'),
+                **kwargs
+            )
+        elif resume == 0:
+            if pre_train == 'download':
+                print('Download the model')
+                dir_model = os.path.join('..', 'models')
+                os.makedirs(dir_model, exist_ok=True)
+                load_from = torch.utils.model_zoo.load_url(
+                    self.model.url,
+                    model_dir=dir_model,
+                    **kwargs
+                )
+        else:
+            load_from = torch.load(
+                os.path.join(apath, 'model_{}.pt'.format(resume)),
+                **kwargs
+            )
+
+        if load_from:
+            self.model.load_state_dict(load_from, strict=False)
+
+    def forward_x8(self, *args, forward_function=None):
+        def _transform(v, op):
+            if self.precision != 'single': v = v.float()
+
+            v2np = v.data.cpu().numpy()
+            if op == 'v':
+                tfnp = v2np[:, :, :, ::-1].copy()
+            elif op == 'h':
+                tfnp = v2np[:, :, ::-1, :].copy()
+            elif op == 't':
+                tfnp = v2np.transpose((0, 1, 3, 2)).copy()
+
+            ret = torch.Tensor(tfnp).to(self.device)
+            if self.precision == 'half': ret = ret.half()
+
+            return ret
+
+        list_x = []
+        for a in args:
+            x = [a]
+            for tf in 'v', 'h', 't': x.extend([_transform(_x, tf) for _x in x])
+
+            list_x.append(x)
+
+        list_y = []
+        for x in zip(*list_x):
+            y = forward_function(*x)
+            if not isinstance(y, list): y = [y]
+            if not list_y:
+                list_y = [[_y] for _y in y]
+            else:
+                for _list_y, _y in zip(list_y, y): _list_y.append(_y)
+
+        for _list_y in list_y:
+            for i in range(len(_list_y)):
+                if i > 3:
+                    _list_y[i] = _transform(_list_y[i], 't')
+                if i % 4 > 1:
+                    _list_y[i] = _transform(_list_y[i], 'h')
+                if (i % 4) % 2 == 1:
+                    _list_y[i] = _transform(_list_y[i], 'v')
+
+        y = [torch.cat(_y, dim=0).mean(dim=0, keepdim=True) for _y in list_y]
+        if len(y) == 1: y = y[0]
+
+        return y
+    
+    def forward_chop(self, x, shave=12):
+        x.cpu()
+        batchsize = self.args.crop_batch_size
+        h, w = x.size()[-2:]
+        padsize = int(self.patch_size)
+        shave = int(self.patch_size/2)
+
+        scale = self.scale[self.idx_scale]
+
+        h_cut = (h-padsize)%(int(shave/2))
+        w_cut = (w-padsize)%(int(shave/2))
+
+        x_unfold = torch.nn.functional.unfold(x, padsize, stride=int(shave/2)).transpose(0,2).contiguous()
+
+        x_hw_cut = x[...,(h-padsize):,(w-padsize):]
+        y_hw_cut = self.model.forward(x_hw_cut.cuda()).cpu()
+
+        x_h_cut = x[...,(h-padsize):,:]
+        x_w_cut = x[...,:,(w-padsize):]
+        y_h_cut = self.cut_h(x_h_cut, h, w, h_cut, w_cut, padsize, shave, scale, batchsize)
+        y_w_cut = self.cut_w(x_w_cut, h, w, h_cut, w_cut, padsize, shave, scale, batchsize)
+        
+        x_h_top = x[...,:padsize,:]
+        x_w_top = x[...,:,:padsize]
+        y_h_top = self.cut_h(x_h_top, h, w, h_cut, w_cut, padsize, shave, scale, batchsize)
+        y_w_top = self.cut_w(x_w_top, h, w, h_cut, w_cut, padsize, shave, scale, batchsize)
+
+        x_unfold = x_unfold.view(x_unfold.size(0),-1,padsize,padsize)
+        y_unfold = []
+
+        x_range = x_unfold.size(0)//batchsize + (x_unfold.size(0)%batchsize !=0)
+        x_unfold.cuda()
+        for i in range(x_range):
+            y_unfold.append(P.data_parallel(self.model, x_unfold[i*batchsize:(i+1)*batchsize,...], range(self.n_GPUs)).cpu())
+        y_unfold = torch.cat(y_unfold,dim=0)
+
+        y = torch.nn.functional.fold(y_unfold.view(y_unfold.size(0),-1,1).transpose(0,2).contiguous(),((h-h_cut)*scale,(w-w_cut)*scale), padsize*scale, stride=int(shave/2*scale))
+        
+        y[...,:padsize*scale,:] = y_h_top
+        y[...,:,:padsize*scale] = y_w_top
+
+        y_unfold = y_unfold[...,int(shave/2*scale):padsize*scale-int(shave/2*scale),int(shave/2*scale):padsize*scale-int(shave/2*scale)].contiguous()
+        y_inter = torch.nn.functional.fold(y_unfold.view(y_unfold.size(0),-1,1).transpose(0,2).contiguous(),((h-h_cut-shave)*scale,(w-w_cut-shave)*scale), padsize*scale-shave*scale, stride=int(shave/2*scale))
+        
+        y_ones = torch.ones(y_inter.shape, dtype=y_inter.dtype)
+        divisor = torch.nn.functional.fold(torch.nn.functional.unfold(y_ones, padsize*scale-shave*scale, stride=int(shave/2*scale)),((h-h_cut-shave)*scale,(w-w_cut-shave)*scale), padsize*scale-shave*scale, stride=int(shave/2*scale))
+        
+        y_inter = y_inter/divisor
+
+        y[...,int(shave/2*scale):(h-h_cut)*scale-int(shave/2*scale),int(shave/2*scale):(w-w_cut)*scale-int(shave/2*scale)] = y_inter
+
+        y = torch.cat([y[...,:y.size(2)-int((padsize-h_cut)/2*scale),:],y_h_cut[...,int((padsize-h_cut)/2*scale+0.5):,:]],dim=2)
+        y_w_cat = torch.cat([y_w_cut[...,:y_w_cut.size(2)-int((padsize-h_cut)/2*scale),:],y_hw_cut[...,int((padsize-h_cut)/2*scale+0.5):,:]],dim=2)
+        y = torch.cat([y[...,:,:y.size(3)-int((padsize-w_cut)/2*scale)],y_w_cat[...,:,int((padsize-w_cut)/2*scale+0.5):]],dim=3)
+        return y.cuda()
+    
+    def cut_h(self, x_h_cut, h, w, h_cut, w_cut, padsize, shave, scale, batchsize):
+        
+        x_h_cut_unfold = torch.nn.functional.unfold(x_h_cut, padsize, stride=int(shave/2)).transpose(0,2).contiguous()
+        
+        x_h_cut_unfold = x_h_cut_unfold.view(x_h_cut_unfold.size(0),-1,padsize,padsize)
+        x_range = x_h_cut_unfold.size(0)//batchsize + (x_h_cut_unfold.size(0)%batchsize !=0)
+        y_h_cut_unfold=[]
+        x_h_cut_unfold.cuda()
+        for i in range(x_range):
+            y_h_cut_unfold.append(P.data_parallel(self.model, x_h_cut_unfold[i*batchsize:(i+1)*batchsize,...], range(self.n_GPUs)).cpu())
+        y_h_cut_unfold = torch.cat(y_h_cut_unfold,dim=0)
+        
+        y_h_cut = torch.nn.functional.fold(y_h_cut_unfold.view(y_h_cut_unfold.size(0),-1,1).transpose(0,2).contiguous(),(padsize*scale,(w-w_cut)*scale), padsize*scale, stride=int(shave/2*scale))
+        y_h_cut_unfold = y_h_cut_unfold[...,:,int(shave/2*scale):padsize*scale-int(shave/2*scale)].contiguous()
+        y_h_cut_inter = torch.nn.functional.fold(y_h_cut_unfold.view(y_h_cut_unfold.size(0),-1,1).transpose(0,2).contiguous(),(padsize*scale,(w-w_cut-shave)*scale), (padsize*scale,padsize*scale-shave*scale), stride=int(shave/2*scale))
+        
+        y_ones = torch.ones(y_h_cut_inter.shape, dtype=y_h_cut_inter.dtype)
+        divisor = torch.nn.functional.fold(torch.nn.functional.unfold(y_ones ,(padsize*scale,padsize*scale-shave*scale), stride=int(shave/2*scale)),(padsize*scale,(w-w_cut-shave)*scale), (padsize*scale,padsize*scale-shave*scale), stride=int(shave/2*scale)) 
+        y_h_cut_inter = y_h_cut_inter/divisor
+        
+        y_h_cut[...,:,int(shave/2*scale):(w-w_cut)*scale-int(shave/2*scale)] = y_h_cut_inter
+        return y_h_cut
+        
+    def cut_w(self, x_w_cut, h, w, h_cut, w_cut, padsize, shave, scale, batchsize):
+        
+        x_w_cut_unfold = torch.nn.functional.unfold(x_w_cut, padsize, stride=int(shave/2)).transpose(0,2).contiguous()
+        
+        x_w_cut_unfold = x_w_cut_unfold.view(x_w_cut_unfold.size(0),-1,padsize,padsize)
+        x_range = x_w_cut_unfold.size(0)//batchsize + (x_w_cut_unfold.size(0)%batchsize !=0)
+        y_w_cut_unfold=[]
+        x_w_cut_unfold.cuda()
+        for i in range(x_range):
+            y_w_cut_unfold.append(P.data_parallel(self.model, x_w_cut_unfold[i*batchsize:(i+1)*batchsize,...], range(self.n_GPUs)).cpu())
+        y_w_cut_unfold = torch.cat(y_w_cut_unfold,dim=0)
+        
+        y_w_cut = torch.nn.functional.fold(y_w_cut_unfold.view(y_w_cut_unfold.size(0),-1,1).transpose(0,2).contiguous(),((h-h_cut)*scale,padsize*scale), padsize*scale, stride=int(shave/2*scale))
+        y_w_cut_unfold = y_w_cut_unfold[...,int(shave/2*scale):padsize*scale-int(shave/2*scale),:].contiguous()
+        y_w_cut_inter = torch.nn.functional.fold(y_w_cut_unfold.view(y_w_cut_unfold.size(0),-1,1).transpose(0,2).contiguous(),((h-h_cut-shave)*scale,padsize*scale), (padsize*scale-shave*scale,padsize*scale), stride=int(shave/2*scale))
+        
+        y_ones = torch.ones(y_w_cut_inter.shape, dtype=y_w_cut_inter.dtype)
+        divisor = torch.nn.functional.fold(torch.nn.functional.unfold(y_ones ,(padsize*scale-shave*scale,padsize*scale), stride=int(shave/2*scale)),((h-h_cut-shave)*scale,padsize*scale), (padsize*scale-shave*scale,padsize*scale), stride=int(shave/2*scale))
+        y_w_cut_inter = y_w_cut_inter/divisor
+
+        y_w_cut[...,int(shave/2*scale):(h-h_cut)*scale-int(shave/2*scale),:] = y_w_cut_inter
+        return y_w_cut
+
+################################################################
+
+################################################################
+
+class Checkpoint():
+    def __init__(self, args):
+        self.args = args
+        self.ok = True
+        self.log = torch.Tensor()
+        now = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+
+        if not args.load:
+            if not args.save:
+                args.save = now
+            self.dir = os.path.join('..', 'experiment', args.save)
+        else:
+            self.dir = os.path.join('..', 'experiment', args.load)
+            if os.path.exists(self.dir):
+                self.log = torch.load(self.get_path('psnr_log.pt'))
+                print('Continue from epoch {}...'.format(len(self.log)))
+            else:
+                args.load = ''
+
+        if args.reset:
+            os.system('rm -rf ' + self.dir)
+            args.load = ''
+
+        os.makedirs(self.dir, exist_ok=True)
+        os.makedirs(self.get_path('model'), exist_ok=True)
+        for d in args.data_test:
+            os.makedirs(self.get_path('results-{}'.format(d)), exist_ok=True)
+
+        open_type = 'a' if os.path.exists(self.get_path('log.txt'))else 'w'
+        self.log_file = open(self.get_path('log.txt'), open_type)
+        with open(self.get_path('config.txt'), open_type) as f:
+            f.write(now + '\n\n')
+            for arg in vars(args):
+                f.write('{}: {}\n'.format(arg, getattr(args, arg)))
+            f.write('\n')
+
+        self.n_processes = 8
+
+    def get_path(self, *subdir):
+        return os.path.join(self.dir, *subdir)
+
+    def save(self, trainer, epoch, is_best=False):
+        trainer.model.save(self.get_path('model'), epoch, is_best=is_best)
+        trainer.loss.save(self.dir)
+        trainer.loss.plot_loss(self.dir, epoch)
+
+        self.plot_psnr(epoch)
+        trainer.optimizer.save(self.dir)
+        torch.save(self.log, self.get_path('psnr_log.pt'))
+
+    def add_log(self, log):
+        self.log = torch.cat([self.log, log])
+
+    def write_log(self, log, refresh=False):
+        print(log)
+        self.log_file.write(log + '\n')
+        if refresh:
+            self.log_file.close()
+            self.log_file = open(self.get_path('log.txt'), 'a')
+
+    def done(self):
+        self.log_file.close()
+
+    def plot_psnr(self, epoch):
+        axis = np.linspace(1, epoch, epoch)
+        for idx_data, d in enumerate(self.args.data_test):
+            label = 'SR on {}'.format(d)
+            fig = plt.figure()
+            plt.title(label)
+            for idx_scale, scale in enumerate(self.args.scale):
+                plt.plot(
+                    axis,
+                    self.log[:, idx_data, idx_scale].numpy(),
+                    label='Scale {}'.format(scale)
+                )
+            plt.legend()
+            plt.xlabel('Epochs')
+            plt.ylabel('PSNR')
+            plt.grid(True)
+            plt.savefig(self.get_path('test_{}.pdf'.format(d)))
+            plt.close(fig)
+
+    def begin_background(self):
+        self.queue = Queue()
+
+        def bg_target(queue):
+            while True:
+                if not queue.empty():
+                    filename, tensor = queue.get()
+                    if filename is None: break
+                    imageio.imwrite(filename, tensor.numpy())
+        
+        self.process = [
+            Process(target=bg_target, args=(self.queue,)) \
+            for _ in range(self.n_processes)
+        ]
+        
+        for p in self.process: p.start()
+
+    def end_background(self):
+        for _ in range(self.n_processes): self.queue.put((None, None))
+        while not self.queue.empty(): time.sleep(1)
+        for p in self.process: p.join()
+
+    def save_results(self, dataset, filename, save_list, scale):
+        if self.args.save_results:
+            filename = self.get_path(
+                'results-{}'.format(dataset.dataset.name),
+                '{}_x{}_'.format(filename, scale)
+            )
+
+            postfix = ('SR', 'LR', 'HR')
+            for v, p in zip(save_list, postfix):
+                normalized = v[0].mul(255 / self.args.rgb_range)
+                tensor_cpu = normalized.byte().permute(1, 2, 0).cpu()
+                self.queue.put(('{}{}.png'.format(filename, p), tensor_cpu))
+
+def quantize(img):
+    return img.mul(1).clamp(0, 255).round().div(1)
