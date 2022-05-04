@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from utils import image_converter
-from visualize import visualize_sampling
+from visualize import visualize_sampling, batch_visualize
 
 # args = {
 #     # All the args for the IPT
@@ -117,7 +117,7 @@ def main_ipt(args, mode, img_path=None):
             model.eval()
             device = torch.device("cpu" if args.cpu else "cuda")
             with torch.no_grad(): # This can significant reduce the size in GPU memory...
-                visualize_sampling(img_path, 'ipt', model, device)
+                batch_visualize(img_path, 'ipt', model, device, False, False, True)
 
 def test_ipt(args, model):
 
@@ -133,7 +133,7 @@ def test_ipt(args, model):
     test_loader = torch.utils.data.DataLoader(test_dataset, 
                             batch_size=1, 
                             shuffle=True, num_workers=4,
-                                            pin_memory=True)   
+                                            pin_memory=False)   
 
     model.to(device)
     model.eval()
@@ -337,4 +337,4 @@ if __name__ == '__main__':
         elif vars(args)[arg] == 'False':
             vars(args)[arg] = False
 
-    main_ipt(args, mode = 'visual', img_path="./test/2.png")
+    main_ipt(args, mode = 'visual', img_path="./test/")

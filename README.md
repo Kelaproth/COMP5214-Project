@@ -20,3 +20,6 @@ Generate dataset image list: `python utils.py`. Before that, make sure you have 
 Train the model: `python train.py`. The settings of the training and the model can be 
 changed at the head of the train.
 
+
+Vit: Use [pre-trained IPT model](https://drive.google.com/file/d/1_NN-fr3NWwNzLvj_2S5Hdf2KgeYZVIXz/view?usp=sharing), run `python .\main_ipt.py` to evaluate.
+

@@ -1,4 +1,5 @@
 import torch
+import os
 from utils import image_converter
 from PIL import Image, ImageDraw, ImageFont
 from train import MODEL_LIST
@@ -37,7 +38,7 @@ def load_model(checkpoint_path, model_type, device):
     #         model.eval()
     return model
 
-def visualize_sampling(img, model_type, model, device, halve=False):
+def visualize_sampling(img, model_type, model, device, halve=False, show=True, save=True):
     """
     Visualizes the super-resolved images from the SRResNet and SRGAN for comparison with the bicubic-upsampled image
     and the original high-resolution (HR) image, as done in the paper.
@@ -77,9 +78,6 @@ def visualize_sampling(img, model_type, model, device, halve=False):
         sr_img = model(image_converter(lr_img, source='pil', target='[0, 255]').unsqueeze(0).to(device), 0)
         sr_img = quantize(sr_img)
         sr_img = sr_img.squeeze(0).cpu().detach().numpy()
-        print(hr_img.height, hr_img.width)
-        print(sr_img)
-        print(sr_img.shape)
         sr_img = Image.fromarray(sr_img.astype('uint8').transpose(1, 2, 0), 'RGB')
 
     # Create grid
@@ -118,7 +116,11 @@ def visualize_sampling(img, model_type, model, device, halve=False):
                     margin - text_size[1] - 5], text="Original HR", font=font, fill='black')
 
     # Display grid
-    grid_img.show()
+    if show:
+        grid_img.show()
+
+    if save:
+        grid_img.save('./save/vis/' + img.split(os.sep)[-1])
 
     return grid_img
 
@@ -204,8 +206,15 @@ def visualize_original(lr_img_path, hr_img_path, model_type, model, halve=False)
 
     return grid_img
 
+def batch_visualize(folder, model_type, model, device, halve=False, show=True, save=True):
+    path = os.path.abspath(folder)
+    visual_files = next(os.walk(path))[2]
+    for file in visual_files:
+        file_path = os.path.join(path, file)
+        visualize_sampling(file_path, model_type, model, device, halve, show, save)
 
-# if __name__ == '__main__':
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     model = load_model(checkpoint, model_type, device)
-#     grid_img = visualize_sampling("./test/2.png", model_type, model, device)
+if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(checkpoint, model_type, device)
+    # grid_img = visualize_sampling("./test/2.png", model_type, model, device)
+    batch_visualize('./test', model_type, model, device, False, False, True)
