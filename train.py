@@ -12,7 +12,7 @@ from torch.utils.data import random_split
 from model.srgan import Generator, Discriminator, TruncatedVGG19
 from model.srresnet import SRResNet
 from dataset import SRSampingDataset
-from utils import image_converter
+from utils import image_converter, save_samples
 import skimage
 import lpips
 from model.mae import prepare_mae
@@ -153,7 +153,8 @@ def run(basic_configs, model_configs):
         raise NotImplementedError
     elif basic_configs['model_name'] == 'mae':
         model, optimizer = prepare_mae()
-        criterion = nn.MSELoss()
+        criterion_mse = nn.MSELoss()
+        criterion_hing = nn.HingeEmbeddingLoss()
 
     # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
     full_train_dataset = SRSampingDataset(basic_configs['data_dir'],
@@ -226,7 +227,8 @@ def run(basic_configs, model_configs):
                                             valid_data_loader=val_loader,
                                             model=model,
                                             optimizer=optimizer,
-                                            criterion=criterion,
+                                            criterion_mse=criterion_mse,
+                                            criterion_hing=criterion_hing,
                                             epochs=basic_configs['epochs'],
                                             eval_per_epochs=basic_configs['eval_per_epochs'],
                                             device=device,
@@ -238,7 +240,7 @@ def run(basic_configs, model_configs):
 ########################################################
 ### Training Mae. Model is initilaized in model.mae  ###
 ########################################################
-def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer, criterion, 
+def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer, criterion_mse, criterion_hing,
                         epochs, eval_per_epochs, device, 
                         grad_clip=None, lr_scheduler=None, save=False):
 
@@ -246,6 +248,8 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
         model.train()
         start_time = time.time()
         loss_history = []
+        test_iter_X = iter(train_data_loader)
+        fixed_X = test_iter_X.next()[0].to(device)
         with tqdm(train_data_loader, unit='batch') as tepoch:
             for batch in tepoch:
                 tepoch.set_description(f"Epoch {epoch}")
@@ -258,10 +262,15 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                 # print(lr_imgs.size(), hr_imgs.size(), hr_imgs.size()[2])
                 _, _, sr_imgs_pred = model(lr_imgs)
 
-                loss = criterion(sr_imgs_pred, hr_imgs)
+                loss = criterion_mse(sr_imgs_pred, hr_imgs) + criterion_hing(sr_imgs_pred, hr_imgs)
                 loss.backward()
+                optimizer.step()
+
+                
                 loss_history.append(loss.item())
                 tepoch.set_postfix(loss=loss.item())
+            if epoch % 5 == 0:
+                save_samples(epoch, fixed_X, model)
 
 
         end_time = time.time()
@@ -292,7 +301,7 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                         # Forward the model
                         _, _, sr_imgs_pred = model(lr_imgs) # Will be [-1, 1]
 
-                        loss = criterion(sr_imgs_pred, hr_imgs)
+                        loss = criterion_mse(sr_imgs_pred, hr_imgs) #+ criterion_hing(sr_imgs_pred, hr_imgs)
                         loss_history.append(loss.item())
                         vepoch.set_postfix(loss=loss.item())
                             
