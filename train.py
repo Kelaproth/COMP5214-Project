@@ -11,7 +11,7 @@ from torch.utils.data import random_split
 # from eval import eval #import evaluation functions
 from model.srgan import Generator, Discriminator, TruncatedVGG19
 from model.srresnet import SRResNet
-from dataset import SRSampingDataset
+from dataset import SRSamplingDataset
 from utils import image_converter, save_samples
 import skimage
 import lpips
