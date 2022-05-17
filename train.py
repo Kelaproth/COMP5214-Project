@@ -152,7 +152,8 @@ def run(basic_configs, model_configs):
     elif basic_configs['model_name'] == 'vit':
         raise NotImplementedError
     elif basic_configs['model_name'] == 'mae':
-        model, optimizer = prepare_mae()
+        model, optimizer, output_model = prepare_mae()
+        # model.load_state_dict(torch.load("./pretrained/mae_pretrain_vit_base.pth"), strict=False)
         criterion_mse = nn.MSELoss()
         criterion_hing = nn.HingeEmbeddingLoss()
 
@@ -226,6 +227,7 @@ def run(basic_configs, model_configs):
                                             train_data_loader=train_loader,
                                             valid_data_loader=val_loader,
                                             model=model,
+                                            output_model = output_model,
                                             optimizer=optimizer,
                                             criterion_mse=criterion_mse,
                                             criterion_hing=criterion_hing,
@@ -240,7 +242,7 @@ def run(basic_configs, model_configs):
 ########################################################
 ### Training Mae. Model is initilaized in model.mae  ###
 ########################################################
-def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer, criterion_mse, criterion_hing,
+def train_mae(model_name, train_data_loader, valid_data_loader, model, output_model, optimizer, criterion_mse, criterion_hing,
                         epochs, eval_per_epochs, device, 
                         grad_clip=None, lr_scheduler=None, save=False):
 
@@ -259,8 +261,9 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                 lr_imgs, hr_imgs = batch
                 lr_imgs = lr_imgs.to(device)
                 hr_imgs = hr_imgs.to(device)
-                # print(lr_imgs.size(), hr_imgs.size(), hr_imgs.size()[2])
                 _, _, sr_imgs_pred = model(lr_imgs)
+                # sr_imgs_pred = output_model(sr_imgs_pred)
+                # print(lr_imgs.size(), hr_imgs.size(), sr_imgs_pred.size())
 
                 loss = criterion_mse(sr_imgs_pred, hr_imgs) + criterion_hing(sr_imgs_pred, hr_imgs)
                 loss.backward()
@@ -330,7 +333,7 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
 
         if not os.path.exists(f'./save/{model_name}'):
             os.makedirs(f'./save/{model_name}')
-        if save and (epoch + 1) % 5:
+        if save and (epoch + 1) % 5 == 1:
             torch.save({'epoch': epoch,
                     'model': model,
                     'optimizer': optimizer},
