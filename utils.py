@@ -1,6 +1,8 @@
 import json
 import os
 from PIL import Image
+import scipy
+import scipy.misc
 import numpy as np
 import torch
 from torchvision.transforms import functional
@@ -13,6 +15,22 @@ imagenet_mean = torch.FloatTensor([0.485, 0.456, 0.406]).unsqueeze(1).unsqueeze(
 imagenet_std = torch.FloatTensor([0.229, 0.224, 0.225]).unsqueeze(1).unsqueeze(2)
 imagenet_mean_cuda = torch.FloatTensor([0.485, 0.456, 0.406]).to(device).unsqueeze(0).unsqueeze(2).unsqueeze(3)
 imagenet_std_cuda = torch.FloatTensor([0.229, 0.224, 0.225]).to(device).unsqueeze(0).unsqueeze(2).unsqueeze(3)
+
+def save_samples(epoch, fixed_X, model):
+    """Saves samples from both generators X->Y and Y->X.
+    """
+    _, _, Y = model(fixed_X)
+
+    X, Y = fixed_X[0].cpu().data.numpy().transpose(1, 2, 0), Y[0].cpu().data.numpy().transpose(1, 2, 0)
+
+    path = os.path.join('./output_dir', 'sample-{:06d}-X.png'.format(epoch))
+    scipy.misc.imsave(path, X)
+    print('Saved {}'.format(path))
+
+    path = os.path.join('./output_dir', 'sample-{:06d}-Y.png'.format(epoch))
+    scipy.misc.imsave(path, Y)
+    print('Saved {}'.format(path))
+
 
 
 def generate_image_lists(data_dir: str = './data', min_size: int = 100):

@@ -25,7 +25,7 @@ import os
 import time
 from pathlib import Path
 import math
-
+import torch.nn.functional as F
 import torch
 import torch.backends.cudnn as cudnn
 # from torch.utils.tensorboard import SummaryWriter
@@ -235,6 +235,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
+
 ############ MAE ############
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
@@ -278,6 +279,10 @@ class MaskedAutoencoderViT(nn.Module):
         self.norm_pix_loss = norm_pix_loss
 
         self.initialize_weights()
+
+        self.out = OutNet()
+
+        
 
     def initialize_weights(self):
         # initialization
@@ -332,9 +337,9 @@ class MaskedAutoencoderViT(nn.Module):
         h = w = int(x.shape[1]**.5)
         assert h * w == x.shape[1]
         
-        x = x.reshape(shape=(x.shape[0], h, w, p * 4, p * 4, 3))
+        x = x.reshape(shape=(x.shape[0], h, w, p*4 , p*4 , 3))
         x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], 3, h * p * 4, h * p * 4))
+        imgs = x.reshape(shape=(x.shape[0], 3, h * p *4 , h * p *4 ))
         return imgs
 
     def random_masking(self, x, mask_ratio):
@@ -430,12 +435,55 @@ class MaskedAutoencoderViT(nn.Module):
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
-    def forward(self, imgs, mask_ratio=0.75):
+    def forward(self, imgs, mask_ratio=0.00):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
         # loss = self.forward_loss(imgs, pred, mask)
         y = self.unpatchify(pred)
+        # y = self.out(y)
+        
         return pred, mask, y
+
+
+def deconv(in_channels, out_channels, kernel_size, stride=2, padding=1, batch_norm=True):
+    """Creates a transposed-convolutional layer, with optional batch normalization.
+    """
+    layers = []
+    layers.append(nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=False))
+    if batch_norm:
+        layers.append(nn.BatchNorm2d(out_channels))
+    return nn.Sequential(*layers)
+
+def conv(in_channels, out_channels, kernel_size, stride=2, padding=1, batch_norm=True, init_zero_weights=False):
+    """Creates a convolutional layer, with optional batch normalization.
+    """
+    layers = []
+    conv_layer = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
+    if init_zero_weights:
+        conv_layer.weight.data = torch.randn(out_channels, in_channels, kernel_size, kernel_size) * 0.001
+    layers.append(conv_layer)
+
+    if batch_norm:
+        layers.append(nn.BatchNorm2d(out_channels))
+    return nn.Sequential(*layers)
+
+class OutNet(nn.Module):
+
+    def __init__(self):
+        super(OutNet, self).__init__()
+
+        self.use_bias = False
+        self.conv1 = conv(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
+        self.conv2 = deconv(16, 32, 4, stride=2, padding=1, batch_norm=True)
+        self.conv3 = deconv(32, 16, 4, stride=2, padding=1, batch_norm=True)
+        self.conv4 = conv(in_channels=16, out_channels=3, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        out = F.relu(self.conv1(x))
+        out = F.relu(self.conv2(out))
+        out = F.relu(self.conv3(out))
+        out = F.tanh(self.conv4(out))
+        return out
 
 
 def mae_vit_base_patch16_dec512d8b(**kwargs):
@@ -497,9 +545,9 @@ def get_args_parser():
 
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
-    parser.add_argument('--blr', type=float, default=1e-3, metavar='LR',
+    parser.add_argument('--blr', type=float, default=1e-1, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=1e-3, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
@@ -687,13 +735,15 @@ def main(args):
     
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.999))
     # print(optimizer)
     loss_scaler = NativeScaler()
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    return model, optimizer
+    output_model = OutNet()
+    output_model.to(device)
+    return model, optimizer, output_model
 
     # print(f"Start training for {args.epochs} epochs")
     # start_time = time.time()
