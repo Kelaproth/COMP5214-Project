@@ -1,5 +1,9 @@
 ## COMP5214 Project
 
+The project is developed based on the [](), and consist of some reference to other open sourse project, including:
+- IPT:
+- MAE:
+
 Dataset:
 - Train: 
   - Typical Sampling dataset: COCO ([train2014](http://images.cocodataset.org/zips/train2014.zip)/[val2014](http://images.cocodataset.org/zips/val2014.zip))
@@ -19,4 +23,7 @@ Generate dataset image list: `python utils.py`. Before that, make sure you have 
 
 Train the model: `python train.py`. The settings of the training and the model can be 
 changed at the head of the train.
+
+
+Vit: Use [pre-trained IPT model](https://drive.google.com/file/d/1_NN-fr3NWwNzLvj_2S5Hdf2KgeYZVIXz/view?usp=sharing), run `python .\main_ipt.py` to evaluate.
 

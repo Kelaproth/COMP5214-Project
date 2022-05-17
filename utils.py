@@ -46,6 +46,9 @@ def generate_image_lists(data_dir: str = './data', min_size: int = 100):
     train_data_path = os.path.join(original_path, 'train')
     train_dirs = next(os.walk(train_data_path))[1]
     for d in train_dirs:
+        if os.path.exists(os.path.join(train_data_path, (d + '_image_list.json'))):
+            print('List JSON exist and pass it')
+            continue
         train_images = list()
         dataset_path = os.path.join(train_data_path, d)
         for img in os.listdir(dataset_path):
@@ -60,6 +63,9 @@ def generate_image_lists(data_dir: str = './data', min_size: int = 100):
     test_data_path = os.path.join(original_path, 'test')
     test_dirs = next(os.walk(test_data_path))[1]
     for d in test_dirs:
+        if os.path.exists(os.path.join(test_data_path, (d + '_image_list.json'))):
+            print('List JSON exist and pass it')
+            continue
         test_images = list()
         dataset_path = os.path.join(test_data_path, d)
         for img in os.listdir(dataset_path):
