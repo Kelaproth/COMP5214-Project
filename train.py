@@ -16,6 +16,7 @@ from utils import image_converter
 import skimage
 import lpips
 from model.mae import prepare_mae
+from args_ipt import args_ipt
 
 MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae', 'ipt']
 
@@ -69,17 +70,15 @@ srgan_configs = {
     'beta': 1e-3,
 }
 
-vit_configs = {
+# vit_configs = {
 
-}
+# }
 
-mae_configs = {
+# mae_configs = {
 
-}
+# }
 
-ipt_configs = {
-
-}
+ipt_configs = args_ipt
 
 # Set cuda device here
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -153,11 +152,11 @@ def run(basic_configs, model_configs):
         model = model.to(device)
         criterion = nn.MSELoss()
 
-    elif basic_configs['model_name'] == 'vit':
-        raise NotImplementedError
     elif basic_configs['model_name'] == 'mae':
         model, optimizer = prepare_mae()
         criterion = nn.MSELoss()
+    elif basic_configs['model_name'] == 'ipt':
+        model, optimizer = None
 
     # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
     full_train_dataset = SRSamplingDataset(basic_configs['data_dir'],
@@ -182,7 +181,7 @@ def run(basic_configs, model_configs):
                                             pin_memory=True)                                        
 
     # Create learning rate scheduler
-    # FIXME: Not finished
+    # FIXME: Not completed
     if basic_configs['lr_scheduler']:
         assert basic_configs['lr_scheduler_parameters'] is not None
         if basic_configs['lr_scheduler'] == 'steplr':
@@ -238,6 +237,10 @@ def run(basic_configs, model_configs):
                                             lr_scheduler=learning_rate_scheduler,
                                             save=basic_configs['save']
                                             )
+    elif basic_configs['model_name'] in ['ipt']:
+        train_ipt(args, )
+
+
 
 ########################################################
 ### Training Mae. Model is initilaized in model.mae  ###
@@ -331,7 +334,9 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                     'optimizer': optimizer},
                     f'./save/{model_name}/{model_name}_checkpoint_{epoch}.pth.tar')
 
-         
+########################################################
+### Training SRResNet                                ###
+########################################################
 
 
 def train_single_model(model_name,
