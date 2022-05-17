@@ -25,5 +25,5 @@ Train the model: `python train.py`. The settings of the training and the model c
 changed at the head of the train.
 
 
-Vit: Use [pre-trained IPT model](https://drive.google.com/file/d/1_NN-fr3NWwNzLvj_2S5Hdf2KgeYZVIXz/view?usp=sharing), run `python ..\model\ipt.py` to evaluate.
+Vit: Use [pre-trained IPT model](https://drive.google.com/file/d/1_NN-fr3NWwNzLvj_2S5Hdf2KgeYZVIXz/view?usp=sharing), run `python .\model\ipt.py` to evaluate.
 
