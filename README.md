@@ -1,4 +1,8 @@
 ## COMP5214 Project
+project permenant address: [COMP5214 Project](https://github.com/Kelaproth/COMP5214-Project)
+
+By TANG Tianhao (ttangae@connect.ust.hk), ZHANG Weiwen (wzhangbu@connect.ust.hk) and HOU Sizai (shouac@connect.ust.hk)
+
 
 The project is developed based on the [a PyTorch Tutorial to Super-Resolution](https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Super-Resolution#tutorial-in-progress), and consist of some reference to other open sourse project, including:
 - [IPT](https://github.com/huawei-noah/Pretrained-IPT/)
