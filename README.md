@@ -1,5 +1,9 @@
 ## COMP5214 Project
 
+The project is developed based on the [](), and consist of some reference to other open sourse project, including:
+- IPT:
+- MAE:
+
 Dataset:
 - Train: 
   - Typical Sampling dataset: COCO ([train2014](http://images.cocodataset.org/zips/train2014.zip)/[val2014](http://images.cocodataset.org/zips/val2014.zip))

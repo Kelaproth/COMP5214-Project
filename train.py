@@ -16,6 +16,7 @@ from utils import image_converter
 import skimage
 import lpips
 from model.mae import prepare_mae
+from model.ipt import args_ipt, Checkpoint, Loss, Model, quantize
 
 MODEL_LIST = ['srgan', 'srresnet', 'vit', 'mae', 'ipt']
 
@@ -69,17 +70,7 @@ srgan_configs = {
     'beta': 1e-3,
 }
 
-vit_configs = {
-
-}
-
-mae_configs = {
-
-}
-
-ipt_configs = {
-
-}
+ipt_configs = args_ipt
 
 # Set cuda device here
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -153,19 +144,58 @@ def run(basic_configs, model_configs):
         model = model.to(device)
         criterion = nn.MSELoss()
 
-    elif basic_configs['model_name'] == 'vit':
-        raise NotImplementedError
     elif basic_configs['model_name'] == 'mae':
         model, optimizer = prepare_mae()
         criterion = nn.MSELoss()
+    elif basic_configs['model_name'] == 'ipt':
+        # Manually input rather than process it here
+        # model_configs['scale'] = list(map(lambda x: int(x), model_configs['scale'].split('+')))
+        # model_configs['data_train'] =  model_configs['data_train'].split('+')
+        # model_configs['data_test'] = model_configs['data_test'].split('+')
+        checkpoint = Checkpoint(model_configs)
+        if checkpoint.ok:
+            model = Model(model_configs, checkpoint)
+            if basic_configs['checkpoint']:
+                if model_configs['pretrain'] == '':
+                    model_configs['pretrain'] = "./save/ipt/IPT_sr4.pt"
+                state_dict = torch.load(model_configs['pretrain'])
+                model.model.load_state_dict(state_dict, strict = False)
 
-    # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
-    full_train_dataset = SRSamplingDataset(basic_configs['data_dir'],
-                            type='train',
-                            crop_size=basic_configs['crop_size'],
-                            scaling_factor=basic_configs['scaling_factor'],
-                            lr_img_type='imagenet-norm',
-                            hr_img_type='[-1, 1]')
+                if model_configs['optimizer'] == 'ADAM':
+                    optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, model.parameters()),
+                            lr=basic_configs['learning_rate'], betas=model_configs['betas'],
+                            eps=model_configs['epsilon'], weight_decay=model_configs['weight_decay'])
+                elif model_configs['optimizer'] == 'SGD':
+                    optimizer = torch.optim.SGD(params=filter(lambda p: p.requires_grad, model.parameters()),
+                            lr=basic_configs['learning_rate'], momentum=model_configs['momentum'],
+                            weight_decay=model_configs['weight_decay'])
+                elif model_configs['optimizer'] == 'RMSprop':
+                    optimizer = torch.optim.RMSprop(params=filter(lambda p: p.requires_grad, model.parameters()),
+                            lr=basic_configs['learning_rate'], 
+                            eps=model_configs['epsilon'], weight_decay=model_configs['weight_decay'],
+                            momentum=model_configs['momentum'])
+                model = model.to(device)
+                criterion = Loss(model_configs, ckp=checkpoint)
+        else:
+            raise Exception
+
+    if basic_configs['model_name'] == 'ipt':
+                # Custom dataloaders. Note ipt have intrinsic shiftmean.
+        full_train_dataset = SRSamplingDataset(basic_configs['data_dir'],
+                                type='train',
+                                crop_size=basic_configs['crop_size'],
+                                scaling_factor=basic_configs['scaling_factor'],
+                                lr_img_type='[0, 255]',
+                                hr_img_type='[0, 255]')
+    else:
+        # Custom dataloaders. Note hr is [-1, 1] and lr is normed for training.
+        full_train_dataset = SRSamplingDataset(basic_configs['data_dir'],
+                                type='train',
+                                crop_size=basic_configs['crop_size'],
+                                scaling_factor=basic_configs['scaling_factor'],
+                                lr_img_type='imagenet-norm',
+                                hr_img_type='[-1, 1]')
+
     val_size = int(basic_configs['val_proportion'] * len(full_train_dataset))
     train_size = len(full_train_dataset) - val_size
     # Train/Valid split
@@ -182,7 +212,7 @@ def run(basic_configs, model_configs):
                                             pin_memory=True)                                        
 
     # Create learning rate scheduler
-    # FIXME: Not finished
+    # FIXME: Not completed
     if basic_configs['lr_scheduler']:
         assert basic_configs['lr_scheduler_parameters'] is not None
         if basic_configs['lr_scheduler'] == 'steplr':
@@ -238,6 +268,21 @@ def run(basic_configs, model_configs):
                                             lr_scheduler=learning_rate_scheduler,
                                             save=basic_configs['save']
                                             )
+    elif basic_configs['model_name'] in ['ipt']:
+        train_ipt(model_name=basic_configs['model_name'],
+                                            train_data_loader=train_loader,
+                                            valid_data_loader=val_loader,
+                                            model=model,
+                                            optimizer=optimizer,
+                                            criterion=criterion,
+                                            epochs=basic_configs['epochs'],
+                                            eval_per_epochs=basic_configs['eval_per_epochs'],
+                                            device=device,
+                                            grad_clip=basic_configs['grad_clip'],
+                                            lr_scheduler=learning_rate_scheduler,
+                                            save=basic_configs['save'])
+
+
 
 ########################################################
 ### Training Mae. Model is initilaized in model.mae  ###
@@ -331,8 +376,99 @@ def train_mae(model_name, train_data_loader, valid_data_loader, model, optimizer
                     'optimizer': optimizer},
                     f'./save/{model_name}/{model_name}_checkpoint_{epoch}.pth.tar')
 
-         
+########################################################
+### Training IPT                                     ###
+########################################################
 
+def train_ipt(model_name, train_data_loader, valid_data_loader, model, optimizer, criterion, 
+                        epochs, eval_per_epochs, device, 
+                        grad_clip=None, lr_scheduler=None, save=False):
+
+    for epoch in range(epochs):
+        model.train()
+        start_time = time.time()
+        loss_history = []
+        with tqdm(train_data_loader, unit='batch') as tepoch:
+            for batch in tepoch:
+                tepoch.set_description(f"Epoch {epoch}")
+                
+                optimizer.zero_grad()
+
+                lr_imgs, hr_imgs = batch
+                lr_imgs = lr_imgs.to(device)
+                hr_imgs = hr_imgs.to(device)
+                sr_imgs_pred = model(lr_imgs, 0) 
+
+                loss = criterion(sr_imgs_pred, hr_imgs)
+                loss.backward()
+                loss_history.append(loss.item())
+                tepoch.set_postfix(loss=loss.item())
+
+        end_time = time.time()
+        loss_train = np.mean(loss_history)
+        
+        print('Epoch: {0}----Loss {loss:.4f}'
+            '----Time: {time} secs'.format(epoch, 
+            loss=loss_train, time=end_time-start_time))
+
+        # Do evaluation
+        if (epoch + 1) % eval_per_epochs == 0 or epoch==0:
+            start_time = time.time()
+            model.eval()
+            loss_history = []
+            psnr, ssim, mse, nmi, dist_= [], [], [], [], []
+            loss_fn_alex = lpips.LPIPS(net='alex') # Need [-1, 1]
+            loss_fn_alex.to(device)
+            with torch.no_grad():
+                with tqdm(valid_data_loader, unit='batch') as vepoch:
+                    for batch in vepoch:
+                        vepoch.set_description(f"Valid at epoch {epoch}")
+
+                        # Prepare Data
+                        lr_imgs, hr_imgs = batch
+                        lr_imgs = lr_imgs.to(device)
+                        hr_imgs = hr_imgs.to(device) 
+
+                        # Forward the model
+                        sr_imgs_pred = model(lr_imgs, 0) 
+
+                        loss = criterion(sr_imgs_pred, hr_imgs)
+                        loss_history.append(loss.item())
+                        vepoch.set_postfix(loss=loss.item())
+                        
+                        yimgs = quantize(sr_imgs_pred) # Will be [0, 255]
+                        yimgs = sr_imgs_pred.cpu().detach().numpy()
+                        gtimgs = hr_imgs.cpu().detach().numpy()
+
+                        dist = loss_fn_alex.forward(sr_imgs_pred, hr_imgs)
+                        dist_.append(dist.mean().item())
+
+                        for yimg, gtimg in zip(yimgs, gtimgs):
+                            psnr.append(skimage.metrics.peak_signal_noise_ratio(yimg, gtimg, data_range=2))
+                            ssim.append(skimage.metrics.structural_similarity(yimg, gtimg, channel_axis=0))
+                            mse.append(skimage.metrics.mean_squared_error(yimg, gtimg))
+                            nmi.append(skimage.metrics.normalized_mutual_information(yimg, gtimg))
+                        
+            end_time = time.time()
+            print('Valid at epoch: {0}----Loss {loss:.4f}'
+                '----Time: {time} secs'.format(epoch, 
+                loss=np.mean(loss_history), time=end_time-start_time))
+            print("PSNR: %.4f SSIM: %.4f MSE: %.4f NMI: %.4f LPIPS: %.4f"
+                % (np.mean(psnr), np.mean(ssim), 
+                    np.mean(mse), np.mean(nmi), np.mean(dist_)))
+
+        if not os.path.exists(f'./save/{model_name}'):
+            os.makedirs(f'./save/{model_name}')
+        if save and (epoch + 1) % 5 == 0:
+            torch.save({'epoch': epoch,
+                    'model': model,
+                    'optimizer': optimizer},
+                    f'./save/{model_name}/{model_name}_checkpoint_{epoch}.pth.tar')
+
+
+########################################################
+### Training SRResNet                                ###
+########################################################
 
 def train_single_model(model_name,
                         train_data_loader, valid_data_loader,
@@ -436,6 +572,9 @@ def train_single_model(model_name,
                     'optimizer': optimizer},
                     f'./save/{model_name}/{model_name}_checkpoint_{epoch}.pth.tar')
 
+########################################################
+### Training SRGAN                                   ###
+########################################################
 
 def train_generative_adversarial_model(model_name,
         train_data_loader, valid_data_loader, 
@@ -594,7 +733,9 @@ if __name__ == '__main__':
     elif basic_configs['model_name'] == 'srgan':
         model_configs = srgan_configs
     elif basic_configs['model_name'] == 'mae':
-        model_configs = mae_configs
+        model_configs = None
+    elif basic_configs['model_name'] == 'ipt':
+        model_configs = args_ipt
     else:
         raise NotImplementedError
 
